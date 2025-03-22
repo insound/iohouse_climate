@@ -14,7 +14,7 @@ from homeassistant.components.climate import (
     HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TEMPERATURE, CONF_HOST, CONF_PORT, UnitOfTemperature
+from homeassistant.const import ATTR_TEMPERATURE, CONF_HOST, CONF_NAME, CONF_PORT, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -186,6 +186,7 @@ class IOhouseClimateCoordinator:
             except Exception as e:
                 _LOGGER.error("Ошибка проверки зоны %s: %s", zone, str(e))
                 new_data[zone] = {}
+                self._available = False
                 continue
 
         self.data = new_data
@@ -240,16 +241,29 @@ class IOhouseClimateEntity(ClimateEntity):
         self.coordinator = coordinator
         self.hass = coordinator.hass
         self._zone = zone
+        self._device_name = coordinator.entry.data[CONF_NAME]
         self._host = coordinator.entry.data[CONF_HOST]
         self._port = coordinator.entry.data.get(CONF_PORT, DEFAULT_PORT)
-        self._attr_unique_id = f"{DOMAIN}-{self.coordinator.entry.entry_id}-{zone}".lower()
-        self.entity_id = f"climate.{self._attr_unique_id}"
+#        self._attr_unique_id = f"{DOMAIN}-{self.coordinator.entry.entry_id}-{zone}".lower()
+#        self.entity_id = f"climate.{self._attr_unique_id}"
+        zone_name = self.coordinator.data.get(self._zone, {}).get(
+            f"{self._zone}_name", 
+            f"zone_{self._zone}"
+        ).replace(" ", "_").lower()
+        
+        self._attr_unique_id = f"{self._device_name}_{zone_name}".lower()
+        self.entity_id = f"climate.{self._zone}_{self._attr_unique_id}"
         self._update_internal_state()
 
     def _update_internal_state(self):
         data = self.coordinator.data.get(self._zone, {})
         if not isinstance(data, dict):
             data = {}
+        self._zone_name = data.get(
+            f"{self._zone}_name", 
+            f"Zone {self._zone.upper()}"
+        ).strip().replace(" ", "_")
+
         self._zone_name = data.get(f"{self._zone}_name", f"Zone {self._zone.upper()}")        
         self._power_state = bool(data.get(f"{self._zone}_power_state", 0))
         self._pwm = float(data.get(f"{self._zone}_pwm", 0))
@@ -280,7 +294,7 @@ class IOhouseClimateEntity(ClimateEntity):
     def device_info(self):
         return {
             "identifiers": {(DOMAIN, f"{self.coordinator.entry.entry_id}_{self._zone}")},
-            "name": f"{self._zone.upper()} Thermozone Controller",
+            "name": f"{self._zone.upper()} ", # вот тут имя модификатор
             "manufacturer": "ioHouse",
             "model": "Thermozone Controller"
         }

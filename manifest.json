@@ -8,7 +8,7 @@
   "dependencies": ["network", "ssdp", "zeroconf", "dhcp"],
   "codeowners": ["@insound"],
   "requirements": ["aiohttp>=3.7.4"],
-  "version": "1.2.4",
+  "version": "1.2.5",
   "iot_class": "local_polling",
   "ssdp": [    {
     "st": "urn:schemas-upnp-org:device:HVAC_System:1",

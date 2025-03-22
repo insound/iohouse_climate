@@ -91,13 +91,14 @@ class IOhousePwmSensor(SensorEntity):
         self._zone_name = getattr(climate_entity, "name", f"Zone {zone.upper()}")
         self._unsub_update = None  # Добавляем переменную для хранения отписки
 
-        self._attr_name = f"{zone.upper()} PWM Level"   # Имя с зоной
-
+        self._attr_name = f"{zone.upper()} {self._zone_name} PWM Level"   # Имя с зоной
+        
+        self._attr_device_info = climate_entity.device_info if climate_entity else None
+        self._attr_unique_id = f"{DOMAIN}-{coordinator.entry.entry_id}-{zone}-pwm".lower()
 
         self.coordinator.async_add_listener(self._handle_update)  # Оставляем как есть
         # Привязка к устройству
-        self._attr_device_info = climate_entity.device_info if climate_entity else None
-        self._attr_unique_id = f"{DOMAIN}-{coordinator.entry.entry_id}-{zone}-pwm".lower()
+
 
     async def async_will_remove_from_hass(self) -> None:
         """Отписка при удалении."""
