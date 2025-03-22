@@ -1,0 +1,24 @@
+{
+  "domain": "iohouse_climate",
+  "name": "iOhouse Climate",
+  "icon": "mdi:home-thermometer-outline", 
+  "config_flow": true,
+  "documentation": "https://github.com/insound/iohouse_climate",
+  "issue_tracker": "https://github.com/insound/iohouse_climate/issues",
+  "dependencies": ["network", "ssdp", "zeroconf", "dhcp"],
+  "codeowners": ["@insound"],
+  "requirements": ["aiohttp>=3.7.4"],
+  "version": "1.2.4",
+  "iot_class": "local_polling",
+  "ssdp": [    {
+    "st": "urn:schemas-upnp-org:device:HVAC_System:1",
+    "manufacturer": "ioHouse",
+    "modelNumber": "929000226503",
+  "dhcp": [
+    {"hostname": "iOHouse*"},
+    {"hostname": "ioHouse*"}
+]
+}],
+  "zeroconf": ["_iohouse._tcp.local."],
+  "homekit": {}
+}
