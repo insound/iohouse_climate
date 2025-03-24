@@ -35,7 +35,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 BASE_URL = "http://{0}:{1}{2}"
-SCAN_INTERVAL = timedelta(seconds=30)
+SCAN_INTERVAL = timedelta(seconds=10)
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -84,6 +84,10 @@ class IOhouseClimateCoordinator:
         self._ready_event = asyncio.Event()
         self._sensor_platform_handler = None
 
+    def update_zone_data(self, zone: str, data: dict):
+        """Обновление данных конкретной зоны."""
+        self.data[zone].update(data)
+        self._notify_listeners()
 
     def async_add_listener(self, listener):
         self._listeners.append(listener)
@@ -142,52 +146,46 @@ class IOhouseClimateCoordinator:
         discovered_zones = set()
         new_data = {}
 
-        for zone in DEFAULT_ZONES:
-            try:
-                url = BASE_URL.format(
-                    host,
-                    port,
-                    f"/api_climate?zone_{zone}=1"
-                )
-                if api_key:
-                    url += f"&apikey_rest={api_key}"
+        # Формируем параметры для всех зон
+        zone_params = "&".join([f"zone_{zone}=1" for zone in DEFAULT_ZONES])
+        url = BASE_URL.format(
+            host,
+            port,
+            f"/api_climate?{zone_params}"
+        )
+        if api_key:
+            url += f"&apikey_rest={api_key}"
 
-                async with async_timeout.timeout(10):
-                    response = await self.session.get(url)
-                    if response.status == 200:
-                        raw_data = await response.json()
-                        _LOGGER.debug("Raw data (type: %s) for zone %s: %s", type(raw_data), zone, raw_data)
+        try:
+            async with async_timeout.timeout(10):
+                response = await self.session.get(url)
+                if response.status == 200:
+                    raw_data = await response.json()
+                    _LOGGER.debug("Combined response data: %s", raw_data)
 
-                        data = {}
-                        # Обработка разных форматов данных
-                        if isinstance(raw_data, list):
-                            try:
-                                # Если данные в формате [{"key": "a1_temp", "value": 25}, ...]
-                                data = {item["key"]: item["value"] for item in raw_data}
-                            except KeyError:
-                                # Если данные в формате [["a1_temp", 25], ...]
-                                data = dict(raw_data)
-                            except TypeError:
-                                _LOGGER.error("Неподдерживаемый формат списка для зоны %s", zone)
-                        elif isinstance(raw_data, dict):
-                            data = raw_data
-                        else:
-                            _LOGGER.warning("Некорректный формат данных для зоны %s", zone)
+                    # Обрабатываем данные для всех зон
+                    for zone in DEFAULT_ZONES:
+                        zone_data = {}
+                        try:
+                            # Извлекаем данные для текущей зоны
+                            zone_prefix = f"{zone}_"
+                            zone_items = {k: v for k, v in raw_data.items() if k.startswith(zone_prefix)}
+                            
+                            if zone_items:
+                                discovered_zones.add(zone)
+                                zone_data = zone_items
+                            else:
+                                _LOGGER.debug("No data found for zone %s", zone)
+                            
+                        except KeyError:
+                            _LOGGER.debug("Zone %s data not found in response", zone)
+                        
+                        new_data[zone] = zone_data
 
-                        # Проверка наличия ключей зоны
-                        if any(key.startswith(f"{zone}_") for key in data):
-                            discovered_zones.add(zone)
-                            new_data[zone] = data
-                        else:
-                            new_data[zone] = {}
-                    else:
-                        new_data[zone] = {}
-
-            except Exception as e:
-                _LOGGER.error("Ошибка проверки зоны %s: %s", zone, str(e))
-                new_data[zone] = {}
-                self._available = False
-                continue
+        except Exception as e:
+            _LOGGER.error("Ошибка запроса данных: %s", str(e))
+            self._available = False
+            return discovered_zones
 
         self.data = new_data
         return discovered_zones
@@ -267,6 +265,7 @@ class IOhouseClimateEntity(ClimateEntity):
         self._zone_name = data.get(f"{self._zone}_name", f"Zone {self._zone.upper()}")        
         self._power_state = bool(data.get(f"{self._zone}_power_state", 0))
         self._burner = bool(data.get(f"{self._zone}_burner", 0))  
+        self._nightmode = bool(data.get(f"{self._zone}_nightmode", 0))  
         self._pwm = float(data.get(f"{self._zone}_pwm", 0))
         self._target_temp = float(data.get(f"{self._zone}_target_temp", 0))
         self._current_temp = float(data.get(f"{self._zone}_temperature", 0))
@@ -305,7 +304,7 @@ class IOhouseClimateEntity(ClimateEntity):
             return
         await self._send_command(f"{self._zone}_target_temp={temperature}", temperature)
 
-    async def _send_command(self, command: str, value: Any):
+    async def _send_command(self, command: str, context: Any):
         url = BASE_URL.format(
             self._host,
             self._port,
@@ -318,9 +317,29 @@ class IOhouseClimateEntity(ClimateEntity):
             async with async_timeout.timeout(10):
                 response = await self.coordinator.session.get(url)
                 if response.status == 200:
-                    await self.async_update()
+                    response_data = await response.json()
+                    _LOGGER.debug("API Response: %s", response_data)
+                    
+                    # Обновляем только полученные параметры
+                    if response_data.get("status") == "ok":
+                        updated_params = {
+                            k: v for k, v in response_data.items() 
+                            if k.startswith(f"{self._zone}_") and v is not None
+                        }
+                        
+                        # Синхронизируем состояние с API ответом
+                        self.coordinator.data[self._zone].update(updated_params)
+                        self._update_internal_state()
+                        self.async_write_ha_state()
+                        
+                    elif "invalid_key" in response_data:
+                        _LOGGER.error("Authentication failed")
+                        
+                else:
+                    _LOGGER.error("HTTP Error: %s", response.status)
+                    
         except Exception as e:
-            _LOGGER.error("Ошибка отправки команды: %s", str(e))
+            _LOGGER.error("Command failed: %s", str(e))
 
     @property
     def hvac_action(self) -> HVACAction | None:
@@ -330,21 +349,41 @@ class IOhouseClimateEntity(ClimateEntity):
 
     @property
     def preset_mode(self) -> str | None:
-        if self.eco_mode:
-            return "eco"
+        if self._nightmode:
+            return "sleep"
         if self.away_mode:
             return "away"
-        return "comfort"
+        if self.eco_mode == 0 and self.away_mode == 0:
+            return "comfort"
+        if self.eco_mode == 0 and self.away_mode == 1:
+            return "away"
+        if self.eco_mode == 1 and self.away_mode == 1:
+            return "away"
+        if self._nightmode == 0 and self.away_mode == 0 and self.eco_mode == 0:
+            return "comfort"
+        if self._nightmode == 0 and self.away_mode == 0 and self.eco_mode == 1:
+            return "home"
+        return "home"
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
-        params = {
-            "away_mode": 1 if preset_mode == "away" else 0,
-            "eco_mode": 1 if preset_mode == "eco" else 0
-        }
-        await self._send_command(
-            f"{self._zone}_away_mode={params['away_mode']}&{self._zone}_eco_mode={params['eco_mode']}",
-            preset_mode
-        )
+        """Установка пресета с раздельной отправкой команд для пресетов."""
+        command = None
+        
+        if preset_mode == "away":
+            command = f"{self._zone}_away_mode=1&{self._zone}_nightmode=0"
+        elif preset_mode == "eco":
+            command = f"{self._zone}_eco_mode=1"
+        elif preset_mode == "comfort":
+            command = f"{self._zone}_away_mode=0&{self._zone}_eco_mode=0&{self._zone}_nightmode=0"
+        elif preset_mode == "home":
+            command = f"{self._zone}_away_mode=0"
+        elif preset_mode == "sleep":
+            command = f"{self._zone}_nightmode=1"
+        else:
+            _LOGGER.error("Unknown preset mode: %s", preset_mode)
+            return
+
+        await self._send_command(command, preset_mode)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         power_state = 1 if hvac_mode != HVACMode.OFF else 0

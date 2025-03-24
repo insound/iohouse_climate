@@ -80,26 +80,27 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def _discover_zones(self, host: str, port: int, api_key: str) -> list[str]:
-        """Discover active zones."""
+        """Discover active zones using single request"""
         session = aiohttp.ClientSession()
         discovered_zones = []
         
         try:
-            for zone in DEFAULT_ZONES:
-                try:
-                    url = f"http://{host}:{port}/api_climate?zone_{zone}=1"
-                    if api_key:
-                        url += f"&apikey_rest={api_key}"
+            zone_params = "&".join([f"zone_{zone}=1" for zone in DEFAULT_ZONES])
+            url = f"http://{host}:{port}/api_climate?{zone_params}"
+            if api_key:
+                url += f"&apikey_rest={api_key}"
 
-                    async with async_timeout.timeout(5):
-                        response = await session.get(url)
-                        if response.status == 200:
-                            data = await response.json()
-                            if any(key.startswith(f"{zone}_") for key in data.keys()):
-                                discovered_zones.append(zone)
-                except Exception as e:
-                    _LOGGER.debug("Zone %s check failed: %s", zone, str(e))
-                    continue
+            async with async_timeout.timeout(10):
+                response = await session.get(url)
+                if response.status == 200:
+                    data = await response.json()
+                    discovered_zones = [
+                        zone for zone in DEFAULT_ZONES
+                        if any(k.startswith(f"{zone}_") for k in data.keys())
+                    ]
+
+        except Exception as e:
+            _LOGGER.error("Discovery failed: %s", str(e))
         finally:
             await session.close()
         

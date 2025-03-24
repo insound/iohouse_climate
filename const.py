@@ -6,6 +6,7 @@ DEFAULT_NAME = "iOhouse Thermozone"
 DEFAULT_PORT = 80
 DEFAULT_ZONES = ["a1", "a2", "b1", "b2"]
 UNIQUE_ID_FORMAT = "{host}:{port}:{zone}"
+BASE_URL = "http://{0}:{1}{2}"
 
 # Конфигурационные ключи
 CONF_HOST = "host"
@@ -21,7 +22,7 @@ MAX_TEMP = 100.0
 
 # Режимы работы
 SUPPORT_MODES = [HVACMode.HEAT, HVACMode.OFF]
-SUPPORT_PRESETS = ["comfort", "away", "eco"]
+SUPPORT_PRESETS = ["comfort", "away", "eco", "home", "sleep"]
 
 # Сообщения об ошибках
 ERROR_MESSAGES = {
