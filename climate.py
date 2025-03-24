@@ -266,6 +266,7 @@ class IOhouseClimateEntity(ClimateEntity):
 
         self._zone_name = data.get(f"{self._zone}_name", f"Zone {self._zone.upper()}")        
         self._power_state = bool(data.get(f"{self._zone}_power_state", 0))
+        self._burner = bool(data.get(f"{self._zone}_burner", 0))  
         self._pwm = float(data.get(f"{self._zone}_pwm", 0))
         self._target_temp = float(data.get(f"{self._zone}_target_temp", 0))
         self._current_temp = float(data.get(f"{self._zone}_temperature", 0))
@@ -325,7 +326,7 @@ class IOhouseClimateEntity(ClimateEntity):
     def hvac_action(self) -> HVACAction | None:
         if self._power_state == 0:
             return HVACAction.OFF
-        return HVACAction.HEATING if self._pwm > 0 else HVACAction.IDLE
+        return HVACAction.HEATING if self._burner > 0 else HVACAction.IDLE
 
     @property
     def preset_mode(self) -> str | None:
