@@ -71,6 +71,7 @@ class IOhouseClimateCoordinator:
         session: aiohttp.ClientSession,
         entry: ConfigEntry,
         async_add_entities: AddEntitiesCallback
+        
     ):
         self._available = False
         self.hass = hass
@@ -84,6 +85,21 @@ class IOhouseClimateCoordinator:
         self._ready_event = asyncio.Event()
         self._sensor_platform_handler = None
         self._valve_handler = None  # Добавляем инициализацию
+        self.common_data = {}  # Отдельный словарь для общих данных
+        self.common_listeners = []  # Отдельные слушатели для common_data
+        self.common_request_counter = 0  # Счетчик для управления common=read
+
+
+    def async_add_common_listener(self, listener: Callable[[], Coroutine]):
+        """Безопасное добавление слушателей с проверкой типа."""
+        if listener is None:
+            _LOGGER.error("Попытка добавить None в качестве слушателя!")
+            return
+            
+        if not asyncio.iscoroutinefunction(listener):
+            raise TypeError("Слушатель должен быть корутиной!")
+            
+        self.common_listeners.append(listener)
 
 
     def update_zone_data(self, zone: str, data: dict):
@@ -121,7 +137,14 @@ class IOhouseClimateCoordinator:
             new_zones = await self._check_available_zones()
             _LOGGER.debug("new_zones: %s (тип: %s)", new_zones, type(new_zones))
 
+            if self.common_request_counter % 2 == 0:
+                await self._update_common_data()
+            
+            self.common_request_counter += 1
 
+            # Обработка зон и уведомление слушателей
+            await self._update_entities(new_zones)  # Исправлено: вызов существующего метода
+            self._notify_listeners()
 
             if not isinstance(new_zones, set):
                 _LOGGER.error("Ожидался set, получен: %s. Принудительное преобразование.", type(new_zones))
@@ -166,6 +189,7 @@ class IOhouseClimateCoordinator:
             port,
             f"/api_climate?{zone_params}"
         )
+        self.common_request_counter += 1
         if api_key:
             url += f"&apikey_rest={api_key}"
 
@@ -198,7 +222,6 @@ class IOhouseClimateCoordinator:
                                 if k.startswith(f"{zone}_valve_")
                             })
 
-
                         except KeyError:
                             _LOGGER.debug("Zone %s data not found in response", zone)
                         
@@ -211,6 +234,49 @@ class IOhouseClimateCoordinator:
 
         self.data = new_data
         return discovered_zones
+
+    async def _update_common_data(self):
+        """Отдельный запрос для common=read."""
+        host = self.entry.data[CONF_HOST]
+        port = self.entry.data.get(CONF_PORT, DEFAULT_PORT)
+        api_key = self.entry.data.get(CONF_API_KEY, "")
+        
+        url = BASE_URL.format(
+            host,
+            port,
+            f"/api_climate?common=read"
+        )
+        if api_key:
+            url += f"&apikey_rest={api_key}"
+
+        try:
+            async with async_timeout.timeout(10):
+                response = await self.session.get(url)
+                if response.status == 200:
+                    raw_data = await response.json()
+                    if not isinstance(raw_data, dict):  # Добавлена проверка типа
+                        _LOGGER.error("Invalid common data format")
+                        return
+                        
+                    self.common_data.update({
+                        "summermode": raw_data.get("summermode", 0),
+                        "avalible_update": raw_data.get("avalible_update", 0),
+                        "fWversion": raw_data.get("fWversion", ""),
+                        "u_version": raw_data.get("u_version", ""),
+                        **{f"out{i}": raw_data.get(f"out{i}", 0) for i in range(1, 9)}
+                    })
+                    
+                    # Уведомляем слушателей через асинхронный вызов
+            for listener in self.common_listeners:
+                if listener is not None:  # Добавлена проверка
+                    await listener()  # Теперь безопасно
+                else:
+                    _LOGGER.warning("Обнаружен None в списке слушателей!")
+        except Exception as e:
+            _LOGGER.error("Ошибка: %s", str(e), exc_info=True)
+                        
+        except Exception as e:
+            _LOGGER.error("Ошибка common-запроса: %s", str(e), exc_info=True)
 
     @property
     def available(self) -> bool:

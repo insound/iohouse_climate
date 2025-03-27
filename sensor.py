@@ -29,6 +29,7 @@ async def async_setup_entry(
     coordinator.set_sensor_platform_handler(
         lambda new_zones: hass.async_create_task(
             _async_add_new_sensors(hass, async_add_entities, coordinator, new_zones)
+
         )
     )
 #    await _async_add_new_sensors(hass, async_add_entities, coordinator, coordinator.active_zones)
@@ -51,6 +52,7 @@ async def async_setup_entry(
         if added_zones:
             new_sensors = [IOhousePwmSensor(coordinator, z) for z in added_zones]
             async_add_entities(new_sensors, update_before_add=True)
+            async_add_entities([FirmwareVersionSensor(coordinator)])
 
     coordinator.set_sensor_platform_handler(_sensor_handler)
 
@@ -73,6 +75,28 @@ async def _async_add_new_sensors(
         _LOGGER.info("Added %d new PWM sensors", len(sensors))
     else:
         _LOGGER.info("No new zones found for PWM sensors")
+
+
+
+
+class FirmwareVersionSensor(SensorEntity):
+    _attr_icon = "mdi:chip"
+    
+    def __init__(self, coordinator):
+        self.coordinator = coordinator
+        self._attr_name = "Firmware Version"
+        self._attr_unique_id = f"{DOMAIN}-fw-version-{coordinator.entry.entry_id}"
+        self._attr_device_info = {"identifiers": {(DOMAIN, coordinator.entry.entry_id)}}
+
+    @property
+    def native_value(self):
+        return self.coordinator.common_data.get("fWversion", "unknown")
+
+
+
+
+
+
 
 class IOhousePwmSensor(SensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC

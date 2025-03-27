@@ -5,10 +5,10 @@
   "config_flow": true,
   "documentation": "https://github.com/insound/iohouse_climate",
   "issue_tracker": "https://github.com/insound/iohouse_climate/issues",
-  "dependencies": ["network", "ssdp", "zeroconf", "dhcp", "valve"],
+  "dependencies": ["network", "ssdp", "zeroconf", "dhcp", "valve", "update"],
   "codeowners": ["@insound"],
   "requirements": ["aiohttp>=3.7.4"],
-  "version": "1.2.7",
+  "version": "1.2.8",
   "iot_class": "local_polling",
   "ssdp": [    {
     "st": "urn:schemas-upnp-org:device:HVAC_System:1",

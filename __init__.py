@@ -43,7 +43,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     
     # Загрузка платформ
-    await hass.config_entries.async_forward_entry_setups(entry, ["climate", "sensor", "valve"])
+    await hass.config_entries.async_forward_entry_setups(entry, ["climate", "sensor", "valve", "switch", "update"])
     return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -55,7 +55,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_climate = await hass.config_entries.async_forward_entry_unload(entry, "climate")
     unload_sensor = await hass.config_entries.async_forward_entry_unload(entry, "sensor")
     unload_valve = await hass.config_entries.async_forward_entry_unload(entry, "valve")
-    return unload_climate and unload_sensor and unload_valve
+    unload_switch = await hass.config_entries.async_forward_entry_unload(entry, "switch")
+    unload_update = await hass.config_entries.async_forward_entry_unload(entry, "update")
+    return unload_climate and unload_sensor and unload_valve and unload_switch and unload_update
 
 
 
