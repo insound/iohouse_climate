@@ -83,6 +83,8 @@ class IOhouseClimateCoordinator:
         self._listeners = []
         self._ready_event = asyncio.Event()
         self._sensor_platform_handler = None
+        self._valve_handler = None  # Добавляем инициализацию
+
 
     def update_zone_data(self, zone: str, data: dict):
         """Обновление данных конкретной зоны."""
@@ -109,17 +111,25 @@ class IOhouseClimateCoordinator:
     def set_sensor_platform_handler(self, handler: Callable[[set[str]], None]):
         self._sensor_platform_handler = handler
 
+    def set_valve_platform_handler(self, handler: Callable[[set[str]], None]):
+        self._valve_handler = handler
+
+
     async def async_discover_zones(self, now=None):
         """Обнаружение и обновление зон термостатов."""
         try:
             new_zones = await self._check_available_zones()
             _LOGGER.debug("new_zones: %s (тип: %s)", new_zones, type(new_zones))
+
+
+
             if not isinstance(new_zones, set):
                 _LOGGER.error("Ожидался set, получен: %s. Принудительное преобразование.", type(new_zones))
                 new_zones = set(new_zones)
 
             # Обновление статуса доступности
             self._available = True
+
 
             # Инициализация готовности
             if not self._ready_event.is_set():
@@ -128,6 +138,9 @@ class IOhouseClimateCoordinator:
 
             # Обновление сущностей
             await self._update_entities(new_zones)
+
+            if self._valve_handler:
+                self._valve_handler(new_zones)  # <-- Клапаны создаются после климата
 
             # Уведомление слушателей
             self._notify_listeners()
@@ -171,12 +184,21 @@ class IOhouseClimateCoordinator:
                             zone_prefix = f"{zone}_"
                             zone_items = {k: v for k, v in raw_data.items() if k.startswith(zone_prefix)}
                             
+
+
+
                             if zone_items:
                                 discovered_zones.add(zone)
                                 zone_data = zone_items
                             else:
                                 _LOGGER.debug("No data found for zone %s", zone)
                             
+                            zone_items.update({
+                                k: v for k, v in raw_data.items()
+                                if k.startswith(f"{zone}_valve_")
+                            })
+
+
                         except KeyError:
                             _LOGGER.debug("Zone %s data not found in response", zone)
                         
@@ -205,6 +227,10 @@ class IOhouseClimateCoordinator:
             for entity in new_entities:
                 self.entities[entity._zone] = entity
             _LOGGER.debug("Добавлены новые сущности: %s", added_zones)
+
+        if self._valve_handler:
+            self._valve_handler(new_zones)
+
 
         # Удаление сущностей для неактивных зон
         for zone in removed_zones:
