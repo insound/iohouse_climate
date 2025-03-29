@@ -36,6 +36,7 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 BASE_URL = "http://{0}:{1}{2}"
 SCAN_INTERVAL = timedelta(seconds=10)
+try_counter = 0
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -180,8 +181,8 @@ class IOhouseClimateCoordinator:
         port = self.entry.data.get(CONF_PORT, DEFAULT_PORT)
         api_key = self.entry.data.get(CONF_API_KEY, "")
         discovered_zones = set()
+        global try_counter
         new_data = {}
-
         # Формируем параметры для всех зон
         zone_params = "&".join([f"zone_{zone}=1" for zone in DEFAULT_ZONES])
         url = BASE_URL.format(
@@ -192,11 +193,11 @@ class IOhouseClimateCoordinator:
         self.common_request_counter += 1
         if api_key:
             url += f"&apikey_rest={api_key}"
-
         try:
             async with async_timeout.timeout(10):
                 response = await self.session.get(url)
                 if response.status == 200:
+                    try_counter=0
                     raw_data = await response.json()
                     _LOGGER.debug("Combined response data: %s", raw_data)
 
@@ -228,9 +229,12 @@ class IOhouseClimateCoordinator:
                         new_data[zone] = zone_data
 
         except Exception as e:
-            _LOGGER.error("Ошибка запроса данных: %s", str(e))
-            self._available = False
-            return discovered_zones
+            _LOGGER.info("Ошибка запроса данных: %s", str(e))
+            try_counter+=1
+            if try_counter > 5: 
+                self._available = False
+                _LOGGER.error("Данные не обнаружены после 5 попыток, отключаем объект: %s", str(e))
+                return discovered_zones
 
         self.data = new_data
         return discovered_zones
