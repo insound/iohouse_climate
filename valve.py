@@ -100,7 +100,9 @@ class IOhouseValveEntity(ValveEntity):
     _attr_supported_features = ValveEntityFeature(0)
 
     def __init__(self, coordinator: IOhouseClimateCoordinator, zone: str):
-        climate_entity = coordinator.entities.get(zone)
+        if zone not in coordinator.entities:
+            raise ValueError(f"Climate entity for zone {zone} not found")
+        climate_entity = coordinator.entities[zone]
 
         if not climate_entity:
             _LOGGER.error(

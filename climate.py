@@ -46,15 +46,8 @@ async def async_setup_entry(
     """Инициализация платформы через конфигурационную запись."""
     entry_data = hass.data[DOMAIN][entry.entry_id]
     session = entry_data["session"]
-    
-    coordinator = IOhouseClimateCoordinator(
-        hass=hass,
-        session=session,
-        entry=entry,
-        async_add_entities=async_add_entities
-    )
-    entry_data["coordinator"] = coordinator
-    
+    coordinator = entry_data["coordinator"]  # Используем существующий
+  
     await coordinator.async_discover_zones()
     
     entry.async_on_unload(
@@ -144,7 +137,7 @@ class IOhouseClimateCoordinator:
             self.common_request_counter += 1
 
             # Обработка зон и уведомление слушателей
-            await self._update_entities(new_zones)  # Исправлено: вызов существующего метода
+#           await self._update_entities(new_zones)  # Исправлено: вызов существующего метода  // Удаление дубля
             self._notify_listeners()
 
             if not isinstance(new_zones, set):
@@ -390,7 +383,7 @@ class IOhouseClimateEntity(ClimateEntity):
     def device_info(self):
         return {
             "identifiers": {(DOMAIN, f"{self.coordinator.entry.entry_id}_{self._zone}")},
-            "name": f"{self._zone.upper()} ", # вот тут имя модификатор
+            "name": f"{self._zone.upper()}_{self._zone_name}", # вот тут имя модификатор
             "manufacturer": "ioHouse",
             "model": "Thermozone Controller"
         }
