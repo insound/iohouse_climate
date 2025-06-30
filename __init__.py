@@ -21,7 +21,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Инициализация данных записи
     entry_data = hass.data[DOMAIN][entry.entry_id] = {
         "coordinator": None,
-        "entities": {},
         "session": async_get_clientsession(hass)
     }
     
@@ -29,8 +28,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = IOhouseClimateCoordinator(
         hass=hass,
         session=entry_data["session"],
-        entry=entry,
-        async_add_entities=lambda entities: hass.data[DOMAIN][entry.entry_id]["entities"].update({e.unique_id: e for e in entities}))
+        entry=entry
+    )
+#       async_add_entities=lambda entities: hass.data[DOMAIN][entry.entry_id]["entities"].update({e.unique_id: e for e in entities}))
     entry_data["coordinator"] = coordinator
     
     # Настройка периодического обновления

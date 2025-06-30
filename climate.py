@@ -45,18 +45,14 @@ async def async_setup_entry(
 ) -> None:
     """Инициализация платформы через конфигурационную запись."""
     entry_data = hass.data[DOMAIN][entry.entry_id]
-    session = entry_data["session"]
+#   session = entry_data["session"]
     coordinator = entry_data["coordinator"]  # Используем существующий
   
+    coordinator.set_async_add_entities(async_add_entities)
+
     await coordinator.async_discover_zones()
     
-    entry.async_on_unload(
-        async_track_time_interval(
-            hass,
-            coordinator.async_discover_zones,
-            SCAN_INTERVAL
-        )
-    )
+    """Убран второй интервал обновления ."""
 
 class IOhouseClimateCoordinator:
     def __init__(
@@ -64,14 +60,14 @@ class IOhouseClimateCoordinator:
         hass: HomeAssistant,
         session: aiohttp.ClientSession,
         entry: ConfigEntry,
-        async_add_entities: AddEntitiesCallback
+#        async_add_entities: AddEntitiesCallback
         
     ):
         self._available = False
         self.hass = hass
         self.session = session
         self.entry = entry
-        self.async_add_entities = async_add_entities
+        self.async_add_entities = None
         self.active_zones: set[str] = set()
         self.entities: dict[str, IOhouseClimateEntity] = {}
         self.data: dict[str, Any] = {}
@@ -82,6 +78,11 @@ class IOhouseClimateCoordinator:
         self.common_data = {}  # Отдельный словарь для общих данных
         self.common_listeners = []  # Отдельные слушатели для common_data
         self.common_request_counter = 0  # Счетчик для управления common=read
+
+
+    def set_async_add_entities(self, callback):
+        """Сохраняем callback для добавления сущностей"""
+        self.async_add_entities = callback
 
 
     def async_add_common_listener(self, listener: Callable[[], Coroutine]):
@@ -103,6 +104,7 @@ class IOhouseClimateCoordinator:
 
     def async_add_listener(self, listener):
         self._listeners.append(listener)
+        return lambda: self.async_remove_listener(listener)
 
     def async_remove_listener(self, listener):
         if listener in self._listeners:
@@ -286,7 +288,7 @@ class IOhouseClimateCoordinator:
         # Фильтрация зон, для которых сущности уже существуют
         if added_zones:
             new_entities = [IOhouseClimateEntity(self, zone) for zone in added_zones]
-            self.async_add_entities(new_entities)
+            self.async_add_entities(new_entities)  # Добавляем сущности в HA
             for entity in new_entities:
                 self.entities[entity._zone] = entity
             _LOGGER.debug("Добавлены новые сущности: %s", added_zones)
@@ -337,9 +339,10 @@ class IOhouseClimateEntity(ClimateEntity):
             f"{self._zone}_name", 
             f"zone_{self._zone}"
         ).replace(" ", "_").lower()
-        
-        self._attr_unique_id = f"{self._device_name}_{zone_name}".lower()
-        self.entity_id = f"climate.{self._zone}_{self._attr_unique_id}"
+#       self._attr_name = f"{coordinator.entry.data[CONF_NAME]} {zone.upper()}" # Начальный френдлинейм
+        self._attr_name = None
+        self._attr_unique_id = f"{DOMAIN}_{self._device_name}_{zone}".lower()
+        self.entity_id = f"climate.{zone_name}_{self._attr_unique_id}"
         self._update_internal_state()
 
     def _update_internal_state(self):
@@ -350,8 +353,21 @@ class IOhouseClimateEntity(ClimateEntity):
             f"{self._zone}_name", 
             f"Zone {self._zone.upper()}"
         ).strip().replace(" ", "_")
+#        device_name = self.coordinator.entry.data.get(CONF_NAME, DEFAULT_NAME)
+#        self._attr_name = f"{device_name} {self._zone_name}"  # Новое отображаемое имя
 
-        self._zone_name = data.get(f"{self._zone}_name", f"Zone {self._zone.upper()}")        
+
+        zone_name_from_device = data.get(f"{self._zone}_name", None)
+        base_name = self.coordinator.entry.data[CONF_NAME]
+
+        if zone_name_from_device:
+            # Формат: "Устройство A1 ИмяЗоны"
+            self._attr_name = f"{base_name}"
+        else:
+            # Формат: "Устройство A1" если имя зоны не пришло
+           self._attr_name = f"{self._zone.upper()} {base_name}"
+
+#       self._zone_name = data.get(f"{self._zone}_name", f"Zone {self._zone.upper()}")        
         self._power_state = bool(data.get(f"{self._zone}_power_state", 0))
         self._burner = bool(data.get(f"{self._zone}_burner", 0))  
         self._nightmode = bool(data.get(f"{self._zone}_nightmode", 0))  
@@ -363,9 +379,9 @@ class IOhouseClimateEntity(ClimateEntity):
         self._attr_hvac_mode = HVACMode.OFF if self._power_state == 0 else HVACMode.HEAT
         self._attr_available = True
 
-    @property
-    def name(self):
-        return self._zone_name
+#    @property
+#    def name(self):
+#        return self._zone_name
 
     async def async_update(self):
         await self.coordinator.async_discover_zones()
@@ -383,7 +399,7 @@ class IOhouseClimateEntity(ClimateEntity):
     def device_info(self):
         return {
             "identifiers": {(DOMAIN, f"{self.coordinator.entry.entry_id}_{self._zone}")},
-            "name": f"{self._zone.upper()}_{self._zone_name}", # вот тут имя модификатор
+            "name": f"{self._zone.upper()} {self._zone_name}", # вот тут имя модификатор
             "manufacturer": "ioHouse",
             "model": "Thermozone Controller"
         }
