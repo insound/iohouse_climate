@@ -63,7 +63,9 @@ class IOhouseClimateCoordinator:
 #        async_add_entities: AddEntitiesCallback
         
     ):
-        self._available = False
+        self._error_count = 0  # Счетчик последовательных ошибок
+        self._unavailable_threshold = 3  # Порог ошибок для пометки недоступным
+        self._available = True  # Стартовое состояние - доступен
         self.hass = hass
         self.session = session
         self.entry = entry
@@ -148,7 +150,7 @@ class IOhouseClimateCoordinator:
 
             # Обновление статуса доступности
             self._available = True
-
+            self._error_count = 0  # Сбрасываем счетчик при успехе
 
             # Инициализация готовности
             if not self._ready_event.is_set():
@@ -165,9 +167,15 @@ class IOhouseClimateCoordinator:
             self._notify_listeners()
             self.hass.bus.async_fire("iohouse_climate_update")
 
+
+
+
         except Exception as e:
             _LOGGER.error("Ошибка: %s\nТрассировка: %s", str(e), traceback.format_exc(), exc_info=True)
-            self._available = False
+            self._error_count += 1
+            # Помечаем недоступным только после превышения порога
+            if self._error_count >= self._unavailable_threshold:
+                self._available = False
             self._notify_listeners()
             self.hass.bus.async_fire("iohouse_climate_update")
 
@@ -189,7 +197,7 @@ class IOhouseClimateCoordinator:
         if api_key:
             url += f"&apikey_rest={api_key}"
         try:
-            async with async_timeout.timeout(10):
+            async with async_timeout.timeout(15): #сменили с 10
                 response = await self.session.get(url)
                 if response.status == 200:
                     try_counter=0
@@ -510,3 +518,6 @@ class IOhouseClimateEntity(ClimateEntity):
             self.coordinator.available 
             and self._zone in self.coordinator.active_zones 
             and bool(self.coordinator.data.get(self._zone)))
+        if not self.coordinator.available:
+            return self._last_available and (time.time() - self._last_unavailable < 30)
+        return True

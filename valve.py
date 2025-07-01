@@ -149,6 +149,9 @@ class IOhouseValveEntity(ValveEntity):
             and self._zone in self.coordinator.active_zones
             and _has_valve_data(self.coordinator.data.get(self._zone, {}))
         )
+        if not self.coordinator.available:
+            return self._last_available and (time.time() - self._last_unavailable < 30)
+        return True
 
     async def async_update(self) -> None:
         await self.coordinator.async_discover_zones()

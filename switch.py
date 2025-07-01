@@ -128,6 +128,10 @@ class OutSwitch(BaseIOSwitch):
             self.coordinator.available and
             f"out{self.out_num}" in self.coordinator.common_data
         )
+        if not self.coordinator.available:
+            return self._last_available and (time.time() - self._last_unavailable < 30)
+        return True
+
 
     @property
     def is_on(self) -> bool:

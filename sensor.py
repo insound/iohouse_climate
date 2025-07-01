@@ -156,6 +156,10 @@ class IOhousePwmSensor(SensorEntity):
             and self._zone in self.coordinator.active_zones 
             and self.coordinator.data.get(self._zone) is not None
         )
+        if not self.coordinator.available:
+            return self._last_available and (time.time() - self._last_unavailable < 30)
+        return True
+
 
     def _handle_update(self, _event=None):
         """Потокобезопасное обновление через add_job."""
