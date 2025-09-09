@@ -1,4 +1,4 @@
-"""Координатор данных для iOhouse Climate с мгновенным обновлением состояния."""
+"""Координатор данных для iOhouse Climate с мгновенным обновлением состояния и быстрым повтором."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -32,7 +32,7 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 class IOhouseDataUpdateCoordinator(DataUpdateCoordinator):
-    """Координатор данных для iOhouse с мгновенным обновлением состояния."""
+    """Координатор данных для iOhouse с мгновенным обновлением состояния и быстрым повтором."""
 
     def __init__(
         self,
@@ -61,11 +61,16 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator):
         self.last_discovery: float = 0
         self.discovery_interval = DISCOVERY_INTERVAL.total_seconds()
         
-        # Состояние
+        # НОВАЯ ЛОГИКА: Состояние ошибок и быстрого повтора
         self._error_count = 0
         self._max_errors = 3
         self._fast_mode = False
         self._fast_mode_until: float = 0
+        
+        # НОВОЕ: Логика быстрого повтора при первой ошибке
+        self._first_error_retry = False  # Флаг первой ошибки
+        self._retry_in_progress = False  # Флаг выполнения повтора
+        self._quick_retry_delay = 5.0   # 5 секунд на быстрый повтор
         
         # НОВАЯ ЛОГИКА: Кэш подтвержденных значений для мгновенного обновления
         self._confirmed_cache: dict[str, Any] = {}  # Кэш подтвержденных значений
@@ -77,7 +82,7 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator):
         self._command_debounce = 1.5  # Защита от повтора команды
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Основной метод обновления данных."""
+        """Основной метод обновления данных с логикой быстрого повтора."""
         try:
             current_time = time.time()
             
@@ -107,17 +112,57 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator):
         except ConfigEntryAuthFailed:
             raise
         except Exception as err:
-            self._error_count += 1
+            # НОВАЯ ЛОГИКА: Обработка ошибок с быстрым повтором
+            return await self._handle_update_error(err)
+
+    async def _handle_update_error(self, err: Exception) -> dict[str, Any]:
+        """Обработка ошибок обновления с логикой быстрого повтора."""
+        
+        # НОВОЕ: Если это первая ошибка и повтор еще не выполнялся
+        if self._error_count == 0 and not self._first_error_retry:
+            _LOGGER.warning("Первая ошибка обновления: %s. Попытка быстрого повтора через %s сек", 
+                          err, self._quick_retry_delay)
             
-            if self._error_count >= self._max_errors:
-                _LOGGER.warning("Множественные ошибки, переход в режим восстановления")
-                self.update_interval = ERROR_RETRY_DELAY
-                try:
-                    return await self._discovery_phase()
-                except Exception:
-                    pass
+            self._first_error_retry = True
+            self._retry_in_progress = True
             
-            raise UpdateFailed(f"Ошибка обновления данных: {err}")
+            # Запускаем быстрый повтор через 5 секунд
+            try:
+                await asyncio.sleep(self._quick_retry_delay)
+                
+                _LOGGER.debug("Выполняем быстрый повтор после первой ошибки")
+                retry_data = await self._regular_update_phase()
+                
+                # Если повтор успешен - сбрасываем флаги ошибок
+                self._first_error_retry = False
+                self._retry_in_progress = False
+                self._error_count = 0
+                
+                _LOGGER.info("Быстрый повтор успешен - соединение восстановлено")
+                return retry_data
+                
+            except Exception as retry_err:
+                _LOGGER.error("Быстрый повтор неудачен: %s. Entity будет помечен как недоступный", retry_err)
+                self._first_error_retry = False
+                self._retry_in_progress = False
+                self._error_count = 1  # Помечаем как первую "настоящую" ошибку
+                
+                # Теперь выбрасываем исключение чтобы entity стал недоступным
+                raise UpdateFailed(f"Ошибка обновления данных после повтора: {retry_err}")
+        
+        # Обычная логика обработки ошибок (вторая и последующие ошибки)
+        self._error_count += 1
+        self._first_error_retry = False  # Сбрасываем флаг
+        
+        if self._error_count >= self._max_errors:
+            _LOGGER.warning("Множественные ошибки (%d), переход в режим восстановления", self._error_count)
+            self.update_interval = ERROR_RETRY_DELAY
+            try:
+                return await self._discovery_phase()
+            except Exception:
+                pass
+        
+        raise UpdateFailed(f"Ошибка обновления данных: {err}")
 
     async def _discovery_phase(self) -> dict[str, Any]:
         """Фаза обнаружения - определение всех активных зон."""
@@ -232,8 +277,10 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator):
                 else:
                     processed_data["common"][key] = raw_data[key]
         
-        # Сброс счетчика ошибок при успешном обновлении
+        # НОВОЕ: Сброс счетчика ошибок и флагов при успешном обновлении
         self._error_count = 0
+        self._first_error_retry = False
+        self._retry_in_progress = False
         
         # Возврат к нормальному интервалу обновления
         if self.update_interval != REGULAR_UPDATE_INTERVAL:
@@ -399,95 +446,3 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator):
         self._confirmed_cache[param] = value
         self._cache_timestamps[param] = current_time
         _LOGGER.debug("Создан кэш для общего параметра %s = %s", param, value)
-
-    def _get_affected_zones_for_preset_commands(self, command: str) -> set[str]:
-        """Определение зон, затронутых командами пресета, которые требуют обновления данных."""
-        affected_zones = set()
-        
-        # Команды пресетов, которые могут изменить target_temp и другие параметры
-        preset_commands = [
-            "away_mode", "nightmode", "eco_mode", 
-            "home_mode", "comfort_mode", "sleep_mode"
-        ]
-        
-        # Парсим команду для поиска команд пресетов
-        command_parts = command.split('&')
-        for part in command_parts:
-            if '=' not in part:
-                continue
-                
-            param_name, _ = part.split('=', 1)
-            
-            # Проверяем каждую зону
-            for zone in DEFAULT_ZONES:
-                zone_prefix = f"{zone}_"
-                if param_name.startswith(zone_prefix):
-                    param_suffix = param_name[len(zone_prefix):]
-                    
-                    # Если это команда пресета для этой зоны
-                    if param_suffix in preset_commands:
-                        affected_zones.add(zone)
-                        _LOGGER.debug("Обнаружена команда пресета для зоны %s: %s", zone, param_name)
-        
-        return affected_zones
-
-    async def _delayed_refresh_zone_data(self, zones: set[str], delay_seconds: float) -> None:
-        """Отложенный запрос данных зон после команды пресета."""
-        try:
-            _LOGGER.debug("Ожидание %.1f сек перед запросом обновленных данных зон %s", delay_seconds, zones)
-            await asyncio.sleep(delay_seconds)
-            
-            # Создаем запрос только для затронутых зон
-            zone_params = "&".join([f"zone_{zone}=1" for zone in zones])
-            url = f"http://{self.host}:{self.port}{API_CLIMATE_ENDPOINT}?{zone_params}"
-            
-            if self.api_key:
-                url += f"&apikey_rest={self.api_key}"
-
-            _LOGGER.debug("Запрос обновленных данных зон после пресета: %s", zones)
-
-            async with async_timeout.timeout(6):
-                response = await self.session.get(url)
-                
-                if response.status == 200:
-                    fresh_data = await response.json()
-                    current_time = time.time()
-                    
-                    # Обновляем кэш свежими данными для затронутых зон
-                    updated_params = []
-                    for zone in zones:
-                        for key, value in fresh_data.items():
-                            if key.startswith(f"{zone}_"):
-                                param_name = key[3:]  # Убираем префикс зоны
-                                
-                                # Особенно важно обновить target_temp и связанные параметры
-                                important_params = [
-                                    "target_temp", "power_state", "away_mode", 
-                                    "nightmode", "eco_mode", "temperature"
-                                ]
-                                
-                                if param_name in important_params:
-                                    self._confirmed_cache[key] = value
-                                    self._cache_timestamps[key] = current_time
-                                    updated_params.append(f"{key}={value}")
-                    
-                    if updated_params:
-                        _LOGGER.info("Обновлены данные после пресета: %s", ", ".join(updated_params))
-                        
-                        # Обновляем UI с новыми данными
-                        await self._trigger_immediate_update()
-                    
-                else:
-                    _LOGGER.warning("Ошибка отложенного запроса зон: HTTP %s", response.status)
-                    
-        except asyncio.TimeoutError:
-            _LOGGER.warning("Таймаут отложенного запроса данных зон")
-        except asyncio.CancelledError:
-            _LOGGER.debug("Отложенный запрос данных зон отменен")
-        except Exception as err:
-            _LOGGER.error("Ошибка отложенного запроса данных зон: %s", err)
-
-    async def _refresh_zone_data_after_preset(self, zones: set[str], timestamp: float) -> None:
-        """Дополнительный запрос данных зон после команды пресета (старый метод, оставлен для совместимости)."""
-        # Этот метод теперь не используется, вместо него используется _delayed_refresh_zone_data
-        pass
