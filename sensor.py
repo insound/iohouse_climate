@@ -1,19 +1,22 @@
-"""Sensor platform для отображения уровня PWM термостатов ioHouse."""
+"""Sensor platform для отображения PWM термостатов iOhouse."""
 from __future__ import annotations
 import logging
+from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import (
+    SensorEntity,
+    SensorDeviceClass,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import EntityCategory
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.const import PERCENTAGE
 
-from .const import (
-    DOMAIN,
-    CONF_ZONES,
-    DEFAULT_ZONES,
-)
-from .climate import IOhouseClimateEntity
+from .const import DOMAIN, CONF_NAME
+from .coordinator import IOhouseDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,166 +25,194 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Инициализация сенсоров PWM."""
-    entry_data = hass.data[DOMAIN][entry.entry_id]
-    coordinator = entry_data["coordinator"]
-
-    coordinator.set_sensor_platform_handler(
-        lambda new_zones: hass.async_create_task(
-            _async_add_new_sensors(hass, async_add_entities, coordinator, new_zones)
-
-        )
+    """Инициализация платформы сенсоров."""
+    coordinator: IOhouseDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    
+    # Создаем PWM сенсоры для всех активных зон
+    entities = []
+    for zone in coordinator.zones:
+        entities.append(IOhousePwmSensor(coordinator, entry, zone))
+    
+    # Добавляем сенсор версии прошивки
+    entities.append(IOhouseFirmwareVersionSensor(coordinator, entry))
+    
+    async_add_entities(entities, update_before_add=True)
+    
+    # Обработчик изменения зон
+    @callback
+    def handle_zones_changed(event):
+        """Обработка изменения списка зон."""
+        if event.data.get("entry_id") == entry.entry_id:
+            new_zones = set(event.data.get("zones", []))
+            existing_zones = {entity.zone for entity in entities if hasattr(entity, 'zone')}
+            
+            # Добавляем PWM сенсоры для новых зон
+            added_zones = new_zones - existing_zones
+            if added_zones:
+                new_entities = [
+                    IOhousePwmSensor(coordinator, entry, zone)
+                    for zone in added_zones
+                ]
+                async_add_entities(new_entities, update_before_add=True)
+                entities.extend(new_entities)
+                _LOGGER.info("Добавлены PWM сенсоры для зон: %s", added_zones)
+    
+    # Подписка на события изменения зон
+    entry.async_on_unload(
+        hass.bus.async_listen(f"{DOMAIN}_zones_changed", handle_zones_changed)
     )
-#    await _async_add_new_sensors(hass, async_add_entities, coordinator, coordinator.active_zones)
-    await coordinator.async_discover_zones()
 
-
-
-
-
-    # Создаем сенсоры для всех существующих зон
-    sensors = [
-        IOhousePwmSensor(coordinator, zone)
-        for zone in coordinator.entry.data.get(CONF_ZONES, DEFAULT_ZONES)
-    ]
-    async_add_entities(sensors, update_before_add=True)
-
-    def _sensor_handler(new_zones: set[str]):
-        existing_zones = {s._zone for s in sensors}
-        added_zones = new_zones - existing_zones
-        if added_zones:
-            new_sensors = [IOhousePwmSensor(coordinator, z) for z in added_zones]
-            async_add_entities(new_sensors, update_before_add=True)
-            async_add_entities([FirmwareVersionSensor(coordinator)])
-
-    coordinator.set_sensor_platform_handler(_sensor_handler)
-
-
-async def _async_add_new_sensors(
-    hass: HomeAssistant,
-    async_add_entities: AddEntitiesCallback,
-    coordinator: IOhouseClimateCoordinator,
-    new_zones: set[str]
-) -> None:
-    """Добавление новых сенсоров."""
-    sensors = [
-        IOhousePwmSensor(coordinator, zone)
-        for zone in new_zones
-        if zone not in coordinator.entities
-    ]
-
-    if sensors:
-        async_add_entities(sensors, update_before_add=True)
-        _LOGGER.info("Added %d new PWM sensors", len(sensors))
-    else:
-        _LOGGER.info("No new zones found for PWM sensors")
-
-
-
-
-class FirmwareVersionSensor(SensorEntity):
-    _attr_icon = "mdi:chip"
+class IOhousePwmSensor(CoordinatorEntity, SensorEntity):
+    """PWM сенсор для зоны iOhouse."""
     
-    def __init__(self, coordinator):
-        self.coordinator = coordinator
-        self._attr_name = "Firmware Version"
-        self._attr_unique_id = f"{DOMAIN}-fw-version-{coordinator.entry.entry_id}"
-        self._attr_device_info = {"identifiers": {(DOMAIN, coordinator.entry.entry_id)}}
-
-    @property
-    def native_value(self):
-        return self.coordinator.common_data.get("fWversion", "unknown")
-
-
-
-
-
-
-
-class IOhousePwmSensor(SensorEntity):
+    _attr_device_class = SensorDeviceClass.POWER_FACTOR
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_native_unit_of_measurement = "%"
+    _attr_native_unit_of_measurement = PERCENTAGE
     _attr_icon = "mdi:percent"
-    _attr_suggested_display_precision = 0
+    _attr_suggested_display_precision = 1
+    _attr_has_entity_name = True
+    _attr_name = "PWM Level"
 
-    def __init__(self, coordinator, zone: str):
+    def __init__(
+        self,
+        coordinator: IOhouseDataUpdateCoordinator,
+        entry: ConfigEntry,
+        zone: str,
+    ) -> None:
+        """Инициализация PWM сенсора."""
+        super().__init__(coordinator)
+        
         self.coordinator = coordinator
-        self._zone = zone
-        climate_entity = coordinator.entities.get(zone)
-        if not climate_entity:
-            self._attr_device_info = None
-        else:
-            self._attr_device_info = climate_entity.device_info        
-        self._zone_name = getattr(climate_entity, "name", f"Zone {zone.upper()}")
-        self._unsub_update = None  # Добавляем переменную для хранения отписки
-
-        self._attr_name = f"{zone.upper()} {self._zone_name} PWM Level"   # Имя с зоной
+        self.entry = entry
+        self.zone = zone
         
-        self._attr_device_info = climate_entity.device_info if climate_entity else None
-        self._attr_unique_id = f"{DOMAIN}-{coordinator.entry.entry_id}-{zone}-pwm".lower()
-
-        self.coordinator.async_add_listener(self._handle_update)  # Оставляем как есть
-        # Привязка к устройству
-
-
-    async def async_will_remove_from_hass(self) -> None:
-        """Отписка при удалении."""
-        if self._unsub_update:
-            self._unsub_update()
-        await super().async_will_remove_from_hass()
+        # Получаем имя зоны из данных контроллера
+        zone_data = coordinator.get_zone_data(zone)
+        zone_name = zone_data.get("name", f"Zone {zone.upper()}")
         
-    async def async_update(self) -> None:
-        try:
-            if self.coordinator.available:
-                self._attr_native_value = self.coordinator.entities[self._zone].extra_state_attributes.get("modulation_level")
-                self._attr_available = True
-            else:
-                self._attr_available = False
-        except KeyError:
-            self._attr_available = False
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_{zone}_pwm"
+        self._zone_name = zone_name
+        
+        _LOGGER.debug("Создан PWM сенсор %s для зоны %s (%s)", 
+                     self._attr_unique_id, zone, zone_name)
 
     @property
-    def native_value(self) -> float:
-        """Получение значения PWM из климатической сущности."""
-        if not self.coordinator.available:
-            return None
-        if entity := self.coordinator.entities.get(self._zone):
-            return entity.extra_state_attributes.get("modulation_level", 0)
-        return 0
-    
+    def device_info(self) -> dict[str, Any]:
+        """Информация об устройстве."""
+        return {
+            "identifiers": {(DOMAIN, f"{self.entry.entry_id}_{self.zone}")},
+            "name": f"{self.zone.upper()} {self._zone_name}",
+            "manufacturer": "iOhouse",
+            "model": "Thermozone Controller",
+        }
+
     @property
     def available(self) -> bool:
+        """Доступность сенсора."""
         return (
-            self.coordinator.available 
-            and self._zone in self.coordinator.active_zones 
-            and self.coordinator.data.get(self._zone) is not None
-        )
-        if not self.coordinator.available:
-            return self._last_available and (time.time() - self._last_unavailable < 30)
-        return True
-
-
-    def _handle_update(self, _event=None):
-        """Потокобезопасное обновление через add_job."""
-        if self.hass and self.entity_id:
-            self.hass.add_job(self.async_write_ha_state)  # Обернуть вызов в async_create_background_task
-
-
-    async def async_added_to_hass(self) -> None:
-        """Исправленная подписка на события."""
-        """Безопасная подписка на события с обработкой в основном потоке."""
-        await super().async_added_to_hass()
-        
-        # Асинхронный обработчик события
-        async def _event_handler(event):
-            await self.async_update_ha_state(force_refresh=True)
-        
-        # Подписка через add_job для потокобезопасности
-        self._unsub_update = self.hass.bus.async_listen(
-            "iohouse_climate_update",
-            lambda event: self.hass.add_job(_event_handler, event)
+            self.coordinator.last_update_success
+            and self.zone in self.coordinator.available_zones
         )
 
+    @property
+    def native_value(self) -> float | None:
+        """Текущее значение PWM."""
+        zone_data = self.coordinator.get_zone_data(self.zone)
+        return zone_data.get("pwm", 0)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Дополнительные атрибуты состояния."""
+        zone_data = self.coordinator.get_zone_data(self.zone)
+        
+        return {
+            "zone": self.zone,
+            "zone_name": self._zone_name,
+            "power_state": zone_data.get("power_state", 0),
+            "burner": zone_data.get("burner", 0),
+        }
 
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Обработка обновления от координатора."""
+        # Обновляем имя зоны если оно изменилось
+        zone_data = self.coordinator.get_zone_data(self.zone)
+        new_zone_name = zone_data.get("name", f"Zone {self.zone.upper()}")
+        
+        if new_zone_name != self._zone_name:
+            self._zone_name = new_zone_name
+            _LOGGER.debug("Обновлено имя зоны %s: %s", self.zone, new_zone_name)
+        
+        super()._handle_coordinator_update()
+
+class IOhouseFirmwareVersionSensor(CoordinatorEntity, SensorEntity):
+    """Сенсор версии прошивки iOhouse."""
     
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:chip"
+    _attr_has_entity_name = True
+    _attr_name = "Firmware Version"
+
+    def __init__(
+        self,
+        coordinator: IOhouseDataUpdateCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Инициализация сенсора версии прошивки."""
+        super().__init__(coordinator)
+        
+        self.coordinator = coordinator
+        self.entry = entry
+        self._device_name = entry.data[CONF_NAME]
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_firmware_version"
+        
+        _LOGGER.debug("Создан сенсор версии прошивки %s", self._attr_unique_id)
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Информация об устройстве."""
+        return {
+            "identifiers": {(DOMAIN, self.entry.entry_id)},
+            "name": self._device_name,
+            "manufacturer": "iOhouse",
+            "model": "Thermozone Controller",
+        }
+
+    @property
+    def available(self) -> bool:
+        """Доступность сенсора."""
+        return self.coordinator.last_update_success
+
+    @property
+    def native_value(self) -> str | None:
+        """Текущая версия прошивки."""
+        common_data = self.coordinator.get_common_data()
+        version = common_data.get("fWversion")
+        
+        if version is None:
+            return None
+            
+        return str(version)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Дополнительные атрибуты состояния."""
+        common_data = self.coordinator.get_common_data()
+        
+        attributes = {
+            "current_version": self.native_value,
+            "device_name": self._device_name,
+        }
+        
+        # Добавляем информацию о доступных обновлениях
+        if common_data.get("avalible_update") == 1:
+            update_version = common_data.get("u_version")
+            if update_version:
+                attributes["available_update"] = str(update_version)
+                attributes["update_available"] = True
+        else:
+            attributes["update_available"] = False
+        
+        return attributes

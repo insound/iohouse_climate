@@ -1,16 +1,17 @@
-"""Switch platform для ioHouse."""
+"""Переключатели для интеграции iOhouse с простыми командами."""
 from __future__ import annotations
 import logging
-import async_timeout
+from typing import Any
 
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.switch import SwitchEntity, SwitchDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import EntityCategory
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, CONF_HOST, CONF_PORT, CONF_NAME, CONF_API_KEY
-from .climate import IOhouseClimateCoordinator
+from .const import DOMAIN, CONF_NAME
+from .coordinator import IOhouseDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,129 +21,165 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Инициализация платформы переключателей."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    coordinator: IOhouseDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     
-    # Исправлено: добавлена закрывающая скобка для списка OutSwitch
-    entities = [
-        SummerModeSwitch(coordinator, entry),
-        *[OutSwitch(coordinator, entry, i) for i in range(1, 9)]
-    ]
+    # Создаем переключатели
+    entities = []
+    
+    # Переключатель летнего режима
+    entities.append(SummerModeSwitch(coordinator, entry))
+    
+    # Переключатели выходов (out1-out8)
+    for i in range(1, 9):
+        entities.append(OutputSwitch(coordinator, entry, i))
     
     async_add_entities(entities, update_before_add=True)
 
-class BaseIOSwitch(SwitchEntity):
-    """Базовый класс для переключателей ioHouse."""
-    def __init__(self, coordinator: IOhouseClimateCoordinator, entry: ConfigEntry):
-        super().__init__()
+class BaseIOhouseSwitch(CoordinatorEntity, SwitchEntity):
+    """Базовый класс для переключателей iOhouse."""
+    
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+
+    def __init__(
+        self,
+        coordinator: IOhouseDataUpdateCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Инициализация базового переключателя."""
+        super().__init__(coordinator)
+        
         self.coordinator = coordinator
         self.entry = entry
-        self._attr_has_entity_name = True
-        self._attr_should_poll = False
-        coordinator.async_add_common_listener(self._handle_common_update)  # Регистрация в common_listeners
-
-    async def async_added_to_hass(self) -> None:
-        """Подписка на обновления координатора."""
-        # Исправлено: добавлена закрывающая скобка для async_add_listener
-        self.coordinator.async_add_common_listener(self._handle_common_update)
-
-    async def _handle_common_update(self) -> None:  # Добавлен async!
-        """Обработчик ТОЛЬКО для обновлений common_data."""
-        if self.hass and self.entity_id:
-            self.hass.add_job(self.async_write_ha_state)  # Обернуть вызов в async_create_background_task
-
-
-    # Исправлено: метод вынесен из async_added_to_hass
-    def _handle_coordinator_update(self) -> None:
-        """Обновление состояния при изменении данных."""
-        if self.hass and self.entity_id:
-            self.hass.add_job(self.async_write_ha_state)  # Обернуть вызов в async_create_background_task
+        self._device_name = entry.data[CONF_NAME]
 
     @property
-    def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.entry.entry_id)},
-            manufacturer="ioHouse",
-            model="Thermo Controller",
-            name=self.entry.data[CONF_NAME],
-        )
-
-    async def _send_command(self, command: str) -> bool:
-        host = self.entry.data[CONF_HOST]
-        port = self.entry.data.get(CONF_PORT, 80)
-        api_key = self.entry.data.get(CONF_API_KEY, "")
-        
-        url = f"http://{host}:{port}/apiaction?{command}"
-        if api_key:
-            url += f"&apikey_rest={api_key}"
-
-        try:
-            async with async_timeout.timeout(10):
-                response = await self.coordinator.session.get(url)
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("status") == "ок":
-                        await self.coordinator.async_discover_zones()
-                        return True
-        except Exception as e:
-            _LOGGER.error("Ошибка отправки команды %s: %s", command, str(e))
-        return False
-
-class SummerModeSwitch(BaseIOSwitch):
-    """Переключатель летнего режима."""
-    
-    _attr_icon = "mdi:sun-thermometer"
-    _attr_name = "Summer Mode"
-
-    def __init__(self, coordinator: IOhouseClimateCoordinator, entry: ConfigEntry):
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{DOMAIN}-summer-mode-{entry.entry_id}"
-
-    @property
-    def is_on(self) -> bool:
-        return self.coordinator.common_data.get("summermode", 0) == 1
-
-    async def async_turn_on(self, **kwargs):
-        if await self._send_command("summermode=1"):
-            self.coordinator.common_data["summermode"] = 1
-            self.async_write_ha_state()
-
-    async def async_turn_off(self, **kwargs):
-        if await self._send_command("summermode=0"):
-            self.coordinator.common_data["summermode"] = 0
-            self.async_write_ha_state()
-
-class OutSwitch(BaseIOSwitch):
-    """Переключатель выхода."""
-    
-    _attr_icon = "mdi:electric-switch"
-
-    def __init__(self, coordinator: IOhouseClimateCoordinator, entry: ConfigEntry, out_num: int):
-        super().__init__(coordinator, entry)
-        self.out_num = out_num
-        self._attr_name = f"Output {out_num}"
-        self._attr_unique_id = f"{DOMAIN}-out{out_num}-{entry.entry_id}"
+    def device_info(self) -> dict[str, Any]:
+        """Информация об устройстве."""
+        return {
+            "identifiers": {(DOMAIN, self.entry.entry_id)},
+            "name": self._device_name,
+            "manufacturer": "iOhouse",
+            "model": "Thermozone Controller",
+        }
 
     @property
     def available(self) -> bool:
-        return (
-            self.coordinator.available and
-            f"out{self.out_num}" in self.coordinator.common_data
-        )
-        if not self.coordinator.available:
-            return self._last_available and (time.time() - self._last_unavailable < 30)
-        return True
+        """Доступность переключателя."""
+        return self.coordinator.last_update_success
 
+class SummerModeSwitch(BaseIOhouseSwitch):
+    """Переключатель летнего режима с простыми командами."""
+    
+    _attr_icon = "mdi:sun-thermometer"
+    _attr_name = "Summer Mode"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        coordinator: IOhouseDataUpdateCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Инициализация переключателя летнего режима."""
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_summer_mode"
+        
+        _LOGGER.debug("Создан переключатель летнего режима %s", self._attr_unique_id)
 
     @property
     def is_on(self) -> bool:
-        return self.coordinator.common_data.get(f"out{self.out_num}", 0) == 1
+        """Состояние летнего режима."""
+        common_data = self.coordinator.get_common_data()
+        return common_data.get("summermode", 0) == 1
 
-    async def async_turn_on(self, **kwargs):
-        if await self._send_command(f"out{self.out_num}=1"):
-            self.coordinator.common_data[f"out{self.out_num}"] = 1
-            self.async_write_ha_state()
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Дополнительные атрибуты состояния."""
+        return {
+            "description": "Enables summer mode operation",
+            "device_name": self._device_name,
+        }
 
-    async def async_turn_off(self, **kwargs):
-        if await self._send_command(f"out{self.out_num}=0"):
-            self.coordinator.common_data[f"out{self.out_num}"] = 0
-            self.async_write_ha_state()
+    async def async_turn_on(self, **kwargs) -> None:
+        """Включение летнего режима. Координатор сам создает заморозку."""
+        # ПРОСТОЙ вызов команды - координатор сам создаст заморозку
+        if await self.coordinator.send_command("summermode=1"):
+            _LOGGER.debug("Летний режим включен")
+        else:
+            _LOGGER.error("Не удалось включить летний режим")
+
+    async def async_turn_off(self, **kwargs) -> None:
+        """Выключение летнего режима. Координатор сам создает заморозку."""
+        # ПРОСТОЙ вызов команды - координатор сам создаст заморозку
+        if await self.coordinator.send_command("summermode=0"):
+            _LOGGER.debug("Летний режим выключен")
+        else:
+            _LOGGER.error("Не удалось выключить летний режим")
+
+class OutputSwitch(BaseIOhouseSwitch):
+    """Переключатель выхода с простыми командами."""
+    
+    _attr_device_class = SwitchDeviceClass.SWITCH
+    _attr_icon = "mdi:electric-switch"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        coordinator: IOhouseDataUpdateCoordinator,
+        entry: ConfigEntry,
+        output_num: int,
+    ) -> None:
+        """Инициализация переключателя выхода."""
+        super().__init__(coordinator, entry)
+        
+        self.output_num = output_num
+        self._attr_name = f"Output {output_num}"
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_out{output_num}"
+        
+        _LOGGER.debug("Создан переключатель выхода %s", self._attr_unique_id)
+
+    @property
+    def available(self) -> bool:
+        """Доступность переключателя выхода."""
+        # Проверяем доступность базового координатора
+        if not super().available:
+            return False
+            
+        # Дополнительно проверяем наличие данных об этом выходе
+        common_data = self.coordinator.get_common_data()
+        return f"out{self.output_num}" in common_data
+
+    @property
+    def is_on(self) -> bool:
+        """Состояние выхода."""
+        common_data = self.coordinator.get_common_data()
+        return common_data.get(f"out{self.output_num}", 0) == 1
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Дополнительные атрибуты состояния."""
+        return {
+            "output_number": self.output_num,
+            "description": f"Controls output {self.output_num}",
+            "device_name": self._device_name,
+        }
+
+    async def async_turn_on(self, **kwargs) -> None:
+        """Включение выхода. Координатор сам создает заморозку."""
+        # ПРОСТОЙ вызов команды - координатор сам создаст заморозку
+        command = f"out{self.output_num}=1"
+        
+        if await self.coordinator.send_command(command):
+            _LOGGER.debug("Включен выход %d", self.output_num)
+        else:
+            _LOGGER.error("Не удалось включить выход %d", self.output_num)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        """Выключение выхода. Координатор сам создает заморозку."""
+        # ПРОСТОЙ вызов команды - координатор сам создаст заморозку
+        command = f"out{self.output_num}=0"
+        
+        if await self.coordinator.send_command(command):
+            _LOGGER.debug("Выключен выход %d", self.output_num)
+        else:
+            _LOGGER.error("Не удалось выключить выход %d", self.output_num)

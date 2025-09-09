@@ -1,12 +1,15 @@
+"""Конфигурационный поток для iOhouse Climate с настройкой шага температуры."""
 from __future__ import annotations
 import logging
 import voluptuous as vol
 import aiohttp
 import async_timeout
+from typing import Any
+
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.components import ssdp
+from homeassistant.helpers import selector
 
 from .const import (
     DOMAIN,
@@ -15,55 +18,65 @@ from .const import (
     CONF_NAME,
     CONF_API_KEY,
     CONF_ZONES,
+    CONF_ZONE_MIN_TEMP,
+    CONF_ZONE_MAX_TEMP,
+    CONF_ZONE_TEMP_STEP,  # НОВОЕ
     DEFAULT_NAME,
     DEFAULT_PORT,
-    DEFAULT_ZONES
+    DEFAULT_ZONES,
+    DEFAULT_MIN_TEMP,
+    DEFAULT_MAX_TEMP,
+    DEFAULT_ZONE_TEMP_STEP,  # НОВОЕ
+    API_CLIMATE_ENDPOINT,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for iOhouse Climate."""
+    """Конфигурационный поток для iOhouse Climate."""
     
-    VERSION = 1
+    VERSION = 2
     CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
 
-    async def async_step_user(self, user_input=None):
-        """Handle the initial step."""
+    def __init__(self):
+        """Инициализация."""
+        self.discovered_zones: list[str] = []
+        self.zone_names: dict[str, str] = {}
+        self.host: str = ""
+        self.port: int = DEFAULT_PORT
+        self.name: str = DEFAULT_NAME
+        self.api_key: str = ""
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Первый шаг - ввод базовых настроек."""
         errors = {}
+        
         if user_input is not None:
             try:
-                host = user_input[CONF_HOST]
-                port = user_input.get(CONF_PORT, DEFAULT_PORT)
-                api_key = user_input.get(CONF_API_KEY, "")
+                self.host = user_input[CONF_HOST]
+                self.port = user_input.get(CONF_PORT, DEFAULT_PORT)
+                self.name = user_input[CONF_NAME]
+                self.api_key = user_input.get(CONF_API_KEY, "")
                 
-                # Discover zones
-                zones = await self._discover_zones(host, port, api_key)
-                if not zones:
+                # Обнаружение активных зон
+                zones_data = await self._discover_zones()
+                if not zones_data:
                     raise ValueError("No active zones found")
 
-                # Set unique ID
-                unique_id = f"{DOMAIN}-{host}-{port}-{'-'.join(zones)}"
+                self.discovered_zones = list(zones_data.keys())
+                self.zone_names = {zone: data.get("name", f"Zone {zone.upper()}") 
+                                 for zone, data in zones_data.items()}
+
+                # Установка уникального ID
+                unique_id = f"{DOMAIN}-{self.host}-{self.port}"
                 await self.async_set_unique_id(unique_id)
                 self._abort_if_unique_id_configured()
 
-                # Prepare data
-                data = {
-                    CONF_HOST: host,
-                    CONF_PORT: port,
-                    CONF_NAME: user_input[CONF_NAME],
-                    CONF_ZONES: zones
-                }
-                if api_key:
-                    data[CONF_API_KEY] = api_key
-
-                return self.async_create_entry(
-                    title=user_input[CONF_NAME],
-                    data=data
-                )
+                # Переходим к настройке температурных диапазонов и шага
+                return await self.async_step_zone_config()
 
             except Exception as err:
-                _LOGGER.error("Configuration error: %s", err)
+                _LOGGER.error("Ошибка конфигурации: %s", err)
                 errors["base"] = "discovery_failed"
 
         data_schema = vol.Schema({
@@ -76,145 +89,387 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=data_schema,
-            errors=errors
+            errors=errors,
+            description_placeholders={
+                "zones": ", ".join(DEFAULT_ZONES)
+            }
         )
 
-    async def _discover_zones(self, host: str, port: int, api_key: str) -> list[str]:
-        """Discover active zones using single request"""
+    async def async_step_zone_config(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Второй шаг - настройка температурных диапазонов и шага для зон."""
+        if user_input is not None:
+            # Сохраняем конфигурацию
+            zone_min_temps = {}
+            zone_max_temps = {}
+            zone_temp_steps = {}  # НОВОЕ
+            
+            for zone in self.discovered_zones:
+                zone_min_temps[zone] = user_input.get(f"{zone}_min_temp", DEFAULT_MIN_TEMP)
+                zone_max_temps[zone] = user_input.get(f"{zone}_max_temp", DEFAULT_MAX_TEMP)
+                zone_temp_steps[zone] = user_input.get(f"{zone}_temp_step", DEFAULT_ZONE_TEMP_STEP)  # НОВОЕ
+
+            data = {
+                CONF_HOST: self.host,
+                CONF_PORT: self.port,
+                CONF_NAME: self.name,
+                CONF_ZONES: self.discovered_zones,
+                CONF_ZONE_MIN_TEMP: zone_min_temps,
+                CONF_ZONE_MAX_TEMP: zone_max_temps,
+                CONF_ZONE_TEMP_STEP: zone_temp_steps,  # НОВОЕ
+            }
+            
+            if self.api_key:
+                data[CONF_API_KEY] = self.api_key
+
+            return self.async_create_entry(
+                title=self.name,
+                data=data
+            )
+
+        # Создаем схему для настройки температур и шага каждой зоны
+        schema_dict = {}
+        for zone in self.discovered_zones:
+            zone_name = self.zone_names.get(zone, f"Zone {zone.upper()}")
+            
+            # Минимальная температура
+            schema_dict[vol.Optional(f"{zone}_min_temp", default=DEFAULT_MIN_TEMP)] = vol.All(
+                vol.Coerce(float), vol.Range(min=0, max=200)
+            )
+            
+            # Максимальная температура
+            schema_dict[vol.Optional(f"{zone}_max_temp", default=DEFAULT_MAX_TEMP)] = vol.All(
+                vol.Coerce(float), vol.Range(min=0, max=200)
+            )
+            
+            # НОВОЕ: Шаг температуры
+            schema_dict[vol.Optional(f"{zone}_temp_step", default=DEFAULT_ZONE_TEMP_STEP)] = vol.All(
+                vol.Coerce(float), vol.Range(min=0.01, max=1.0)
+            )
+
+        return self.async_show_form(
+            step_id="zone_config",
+            data_schema=vol.Schema(schema_dict),
+            description_placeholders={
+                "zones": ", ".join([f"{zone} ({self.zone_names.get(zone, zone)})" 
+                                  for zone in self.discovered_zones])
+            }
+        )
+
+    # ... остальные методы остаются без изменений ...
+    async def async_step_ssdp(self, discovery_info: dict[str, Any]) -> FlowResult:
+        """Обработка SSDP обнаружения."""
+        _LOGGER.debug("SSDP обнаружение: %s", discovery_info)
+        
+        from homeassistant.components import ssdp
+        
+        manufacturer = discovery_info.get(ssdp.ATTR_UPNP_MANUFACTURER, "")
+        model = discovery_info.get(ssdp.ATTR_UPNP_MODEL_NUMBER, "")
+        friendly_name = discovery_info.get(ssdp.ATTR_UPNP_FRIENDLY_NAME, "")
+        location = discovery_info.get(ssdp.ATTR_SSDP_LOCATION, "")
+        
+        # Проверяем что это устройство iOhouse
+        if "iOhouse" not in manufacturer.lower() and "iOhouse" not in friendly_name.lower():
+            return self.async_abort(reason="not_iohouse_device")
+        
+        # Извлекаем IP из location URL
+        try:
+            from urllib.parse import urlparse
+            parsed_url = urlparse(location)
+            host_ip = parsed_url.hostname
+            port = parsed_url.port or DEFAULT_PORT
+        except Exception:
+            return self.async_abort(reason="invalid_discovery_info")
+        
+        if not host_ip:
+            return self.async_abort(reason="invalid_discovery_info")
+        
+        # Устанавливаем уникальный ID
+        unique_id = f"{DOMAIN}-{host_ip}-{port}"
+        await self.async_set_unique_id(unique_id)
+        self._abort_if_unique_id_configured()
+        
+        # Сохраняем данные для последующих шагов
+        self.context["title_placeholders"] = {
+            "name": friendly_name or f"iOhouse {host_ip}",
+            "host": host_ip,
+            "port": port,
+        }
+        
+        self.host = host_ip
+        self.port = port
+        self.name = friendly_name or f"iOhouse {host_ip}"
+        
+        # Возвращаем форму подтверждения вместо автоматического добавления
+        return await self.async_step_discovery_confirm()
+
+    async def async_step_dhcp(self, discovery_info: dict[str, Any]) -> FlowResult:
+        """Обработка DHCP обнаружения."""
+        _LOGGER.debug("DHCP обнаружение: %s", discovery_info)
+        
+        from homeassistant.components import dhcp
+        
+        hostname = discovery_info.get(dhcp.HOSTNAME, "")
+        ip_address = discovery_info.get(dhcp.IP_ADDRESS, "")
+        macaddress = discovery_info.get(dhcp.MAC_ADDRESS, "")
+        
+        # Проверяем что это устройство iOhouse по hostname
+        if not any(pattern in hostname.lower() for pattern in ["iOhouse", "iOhouse"]):
+            return self.async_abort(reason="not_iohouse_device")
+        
+        if not ip_address:
+            return self.async_abort(reason="invalid_discovery_info")
+        
+        # Устанавливаем уникальный ID по MAC адресу если есть, иначе по IP
+        unique_id = f"{DOMAIN}-{macaddress or ip_address}"
+        await self.async_set_unique_id(unique_id)
+        self._abort_if_unique_id_configured()
+        
+        # Сохраняем данные для отображения в уведомлении
+        self.context["title_placeholders"] = {
+            "name": hostname or f"iOhouse {ip_address}",
+            "host": ip_address,
+            "port": DEFAULT_PORT,
+        }
+        
+        self.host = ip_address
+        self.port = DEFAULT_PORT
+        self.name = hostname or f"iOhouse {ip_address}"
+        
+        return await self.async_step_discovery_confirm()
+
+    async def async_step_zeroconf(self, discovery_info: dict[str, Any]) -> FlowResult:
+        """Обработка Zeroconf обнаружения."""
+        _LOGGER.debug("Zeroconf обнаружение: %s", discovery_info)
+        
+        from homeassistant.components import zeroconf
+        
+        host = discovery_info.get(zeroconf.ATTR_HOST)
+        port = discovery_info.get(zeroconf.ATTR_PORT, DEFAULT_PORT)
+        hostname = discovery_info.get(zeroconf.ATTR_HOSTNAME, "")
+        name = discovery_info.get(zeroconf.ATTR_NAME, "")
+        
+        # Проверяем что это устройство iOhouse
+        if not any("iOhouse" in text.lower() for text in [hostname, name] if text):
+            return self.async_abort(reason="not_iohouse_device")
+        
+        if not host:
+            return self.async_abort(reason="invalid_discovery_info")
+        
+        # Устанавливаем уникальный ID
+        unique_id = f"{DOMAIN}-{host}-{port}"
+        await self.async_set_unique_id(unique_id)
+        self._abort_if_unique_id_configured()
+        
+        # Сохраняем данные для отображения
+        self.context["title_placeholders"] = {
+            "name": hostname or name or f"iOhouse {host}",
+            "host": host,
+            "port": port,
+        }
+        
+        self.host = host
+        self.port = port
+        self.name = hostname or name or f"iOhouse {host}"
+        
+        return await self.async_step_discovery_confirm()
+
+    async def async_step_discovery_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Подтверждение обнаруженного устройства."""
+        errors = {}
+        
+        if user_input is not None:
+            if user_input.get("add_device"):
+                # Пользователь согласился добавить устройство
+                try:
+                    # Проверяем доступность устройства и обнаруживаем зоны
+                    zones_data = await self._discover_zones()
+                    if not zones_data:
+                        raise ValueError("No active zones found")
+
+                    self.discovered_zones = list(zones_data.keys())
+                    self.zone_names = {zone: data.get("name", f"Zone {zone.upper()}") 
+                                     for zone, data in zones_data.items()}
+
+                    # Переходим к полной настройке (имя устройства + API ключ)
+                    return await self.async_step_discovery_setup()
+
+                except Exception as err:
+                    _LOGGER.error("Ошибка при подтверждении обнаружения: %s", err)
+                    errors["base"] = "discovery_failed"
+            else:
+                # Пользователь отказался добавлять устройство
+                return self.async_abort(reason="user_rejected")
+
+        # Показываем форму подтверждения с информацией об устройстве
+        return self.async_show_form(
+            step_id="discovery_confirm",
+            data_schema=vol.Schema({
+                vol.Required("add_device", default=False): bool,
+            }),
+            description_placeholders={
+                "name": self.name,
+                "host": self.host,
+                "port": self.port,
+            },
+            errors=errors,
+        )
+
+    async def async_step_discovery_setup(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Настройка обнаруженного устройства."""
+        errors = {}
+        
+        if user_input is not None:
+            # Обновляем данные из формы
+            self.name = user_input.get("name", self.name)
+            self.api_key = user_input.get("api_key", "")
+            
+            # Переходим к настройке температурных диапазонов и шага
+            return await self.async_step_zone_config()
+        
+        # Форма для настройки имени и API ключа
+        return self.async_show_form(
+            step_id="discovery_setup",
+            data_schema=vol.Schema({
+                vol.Required("name", default=self.name): str,
+                vol.Optional("api_key", default=""): str,
+            }),
+            description_placeholders={
+                "host": self.host,
+                "port": self.port,
+                "zones": ", ".join([f"{zone} ({self.zone_names.get(zone, zone)})" 
+                                  for zone in self.discovered_zones]),
+            },
+            errors=errors,
+        )
+
+    async def _discover_zones(self) -> dict[str, dict[str, Any]]:
+        """Обнаружение активных зон на контроллере."""
         session = aiohttp.ClientSession()
-        discovered_zones = []
+        discovered_zones = {}
+        
+        _LOGGER.debug("Подключение к контроллеру: %s:%s", self.host, self.port)
         
         try:
+            # Запрос всех возможных зон
             zone_params = "&".join([f"zone_{zone}=1" for zone in DEFAULT_ZONES])
-            url = f"http://{host}:{port}/api_climate?{zone_params}"
-            if api_key:
-                url += f"&apikey_rest={api_key}"
+            url = f"http://{self.host}:{self.port}{API_CLIMATE_ENDPOINT}?{zone_params}&common=read"
+            
+            if self.api_key:
+                url += f"&apikey_rest={self.api_key}"
+
+            _LOGGER.debug("URL запроса: %s", url)
 
             async with async_timeout.timeout(10):
                 response = await session.get(url)
                 if response.status == 200:
-                    data = await response.json()
-                    discovered_zones = [
-                        zone for zone in DEFAULT_ZONES
-                        if any(k.startswith(f"{zone}_") for k in data.keys())
-                    ]
+                    raw_data = await response.json()
+                    
+                    # Анализируем данные для каждой зоны
+                    for zone in DEFAULT_ZONES:
+                        zone_data = {}
+                        for key, value in raw_data.items():
+                            if key.startswith(f"{zone}_"):
+                                param_name = key[3:]  # Убираем префикс зоны
+                                zone_data[param_name] = value
+                        
+                        # Если есть данные для зоны, считаем её активной
+                        if zone_data:
+                            discovered_zones[zone] = zone_data
+                            _LOGGER.debug("Обнаружена активная зона %s: %s", zone, zone_data)
 
         except Exception as e:
-            _LOGGER.error("Discovery failed: %s", str(e))
+            _LOGGER.error("Ошибка обнаружения зон на %s:%s - %s", self.host, self.port, str(e))
+            raise
         finally:
             await session.close()
         
         return discovered_zones
 
-    async def async_step_ssdp(self, discovery_info):
-        """Handle SSDP discovery."""
-        model = discovery_info.get(ssdp.ATTR_UPNP_MODEL_NUMBER)
-        name = discovery_info.get(ssdp.ATTR_UPNP_FRIENDLY_NAME, "")
-        host = discovery_info[ssdp.ATTR_SSDP_LOCATION]
-
-        if model == "929000226503" and name.startswith("ioHouse"):
-            # Extract IP from SSDP location
-            from urllib.parse import urlparse
-            parsed_url = urlparse(host)
-            host_ip = parsed_url.hostname
-            udn = discovery_info[ssdp.ATTR_UPNP_UDN]
-            await self.async_set_unique_id(udn)
-            self._abort_if_unique_id_configured()
-
-            return await self.async_step_confirm({
-                "udn": udn,
-                "host": discovery_info[ssdp.ATTR_SSDP_LOCATION],
-                "name": discovery_info[ssdp.ATTR_UPNP_FRIENDLY_NAME]
-            })
-
-        return self.async_abort(reason="not_iohouse_device")
-
-    async def async_step_confirm(self, user_input=None):
-        """Confirm discovered device."""
-        if user_input is None:
-            return self.async_show_form(
-                step_id="confirm",
-                description_placeholders={
-                    "name": self.context["name"],
-                    "host": self.context["host"]
-                }
-            )
-            
-        return self.async_create_entry(
-            title=f"ioHouse Thermostat ({user_input['name']})",
-            data={
-                CONF_HOST: user_input["host"],
-                CONF_NAME: user_input["name"],
-                CONF_PORT: DEFAULT_PORT
-            }
-        )
-
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        return IOhouseOptionsFlowHandler()
+        """Создание потока настроек."""
+        return IOhouseOptionsFlowHandler(config_entry)
 
 
 class IOhouseOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle options flow updates."""
+    """Обработчик потока настроек с добавлением шага температуры."""
 
-    @property
-    def config_entry(self):
-        return self.hass.config_entries.async_get_entry(self.handler)
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Инициализация options flow."""
+        # НЕ устанавливаем self.config_entry - это устаревший подход
+        # config_entry доступен через self.config_entry автоматически в современных версиях HA
+        pass
 
-    async def async_step_init(self, user_input=None):
-        """Manage the options."""
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Управление настройками с поддержкой шага температуры."""
+        # Получаем config_entry через атрибут родительского класса
+        config_entry = self.config_entry
+        
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Обработка данных из формы
+            current_zones = config_entry.data.get(CONF_ZONES, [])
+            
+            zone_min_temps = {}
+            zone_max_temps = {}
+            zone_temp_steps = {}  # НОВОЕ
+            
+            # Обновляем температурные диапазоны и шаг
+            for zone in current_zones:
+                min_key = f"{zone}_min_temp"
+                max_key = f"{zone}_max_temp"
+                step_key = f"{zone}_temp_step"  # НОВОЕ
+                
+                zone_min_temps[zone] = user_input.get(min_key, DEFAULT_MIN_TEMP)
+                zone_max_temps[zone] = user_input.get(max_key, DEFAULT_MAX_TEMP)
+                zone_temp_steps[zone] = user_input.get(step_key, DEFAULT_ZONE_TEMP_STEP)  # НОВОЕ
+            
+            # Обновляем конфигурацию
+            new_data = dict(config_entry.data)
+            new_data[CONF_ZONE_MIN_TEMP] = zone_min_temps
+            new_data[CONF_ZONE_MAX_TEMP] = zone_max_temps
+            new_data[CONF_ZONE_TEMP_STEP] = zone_temp_steps  # НОВОЕ
+            
+            self.hass.config_entries.async_update_entry(
+                config_entry, data=new_data
+            )
+            
+            return self.async_create_entry(title="", data={})
+
+        # Текущие настройки
+        current_zones = config_entry.data.get(CONF_ZONES, [])
+        current_min_temps = config_entry.data.get(CONF_ZONE_MIN_TEMP, {})
+        current_max_temps = config_entry.data.get(CONF_ZONE_MAX_TEMP, {})
+        current_temp_steps = config_entry.data.get(CONF_ZONE_TEMP_STEP, {})  # НОВОЕ
+
+        # Создаем схему для настройки температур и шага
+        schema_dict = {}
+        for zone in current_zones:
+            current_min = current_min_temps.get(zone, DEFAULT_MIN_TEMP)
+            current_max = current_max_temps.get(zone, DEFAULT_MAX_TEMP)
+            current_step = current_temp_steps.get(zone, DEFAULT_ZONE_TEMP_STEP)  # НОВОЕ
+            
+            zone_display = zone.upper()
+            
+            min_key = f"{zone}_min_temp"
+            max_key = f"{zone}_max_temp"
+            step_key = f"{zone}_temp_step"  # НОВОЕ
+            
+            schema_dict[vol.Optional(min_key, default=current_min)] = vol.All(
+                vol.Coerce(float), vol.Range(min=0, max=200)
+            )
+            schema_dict[vol.Optional(max_key, default=current_max)] = vol.All(
+                vol.Coerce(float), vol.Range(min=0, max=200)
+            )
+            # НОВОЕ: Добавляем поле для шага температуры
+            schema_dict[vol.Optional(step_key, default=current_step)] = vol.All(
+                vol.Coerce(float), vol.Range(min=0.01, max=1.0)
+            )
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({
-                vol.Optional(
-                    CONF_PORT,
-                    default=self.config_entry.options.get(
-                        CONF_PORT, 
-                        self.config_entry.data.get(CONF_PORT, DEFAULT_PORT)
-                    )
-                ): int
-            })
+            data_schema=vol.Schema(schema_dict),
+            description_placeholders={
+                "zones": ", ".join([zone.upper() for zone in current_zones])
+            }
         )
-    
-
-async def async_step_zeroconf(self, discovery_info: zeroconf.ZeroconfServiceInfo) -> FlowResult:
-    """Обработка Zeroconf-обнаружения."""
-    host = discovery_info.host
-    port = discovery_info.port
-    
-    # Проверка наличия устройства
-    if not await self._is_device_valid(host, port):
-        return self.async_abort(reason="not_iohouse_device")
-    
-    # Установка уникального ID
-    unique_id = discovery_info.properties.get("id", host)
-    await self.async_set_unique_id(unique_id)
-    self._abort_if_unique_id_configured()
-    
-    return self.async_create_entry(
-        title=f"ioHouse {host}",
-        data={"host": host, "port": port}
-    )
-
-
-async def async_step_dhcp(self, discovery_info: dhcp.DhcpServiceInfo) -> FlowResult:
-    """Обработка DHCP-обнаружения."""
-    host = discovery_info.ip
-
-    
-    # Проверка MAC-адреса
-    if host.startswith(("ioHouse", "iOHouse")):
-        return self.async_abort(reason="invalid_name")
-    
-    # Установка уникального ID
-    await self.async_set_unique_id(mac)
-    self._abort_if_unique_id_configured()
-    
-    return self.async_create_entry(
-        title=f"ioHouse {mac}",
-        data={"host": host}
-    )
