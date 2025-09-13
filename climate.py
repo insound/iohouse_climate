@@ -1,4 +1,4 @@
-"""Climate platform для термостатов iOhouse с быстрым откликом."""
+"""Climate platform для термостатов iOhouse с исправленным отображением температуры."""
 from __future__ import annotations
 import logging
 from typing import Any
@@ -20,10 +20,10 @@ from .const import (
     CONF_NAME,
     CONF_ZONE_MIN_TEMP,
     CONF_ZONE_MAX_TEMP,
-    CONF_ZONE_TEMP_STEP,  # НОВОЕ
+    CONF_ZONE_TEMP_STEP,
     DEFAULT_MIN_TEMP,
     DEFAULT_MAX_TEMP,
-    DEFAULT_ZONE_TEMP_STEP,  # НОВОЕ
+    DEFAULT_ZONE_TEMP_STEP,
     TEMPERATURE_STEP,  # Оставляем как fallback
     SUPPORT_MODES,
     SUPPORT_PRESETS,
@@ -72,7 +72,7 @@ async def async_setup_entry(
     )
 
 class IOhouseClimateEntity(CoordinatorEntity, ClimateEntity):
-    """Климатическая сущность iOhouse с быстрым откликом."""
+    """Климатическая сущность iOhouse с корректным отображением температуры."""
     
     _attr_icon = "mdi:thermostat"
     _attr_has_entity_name = True
@@ -104,15 +104,20 @@ class IOhouseClimateEntity(CoordinatorEntity, ClimateEntity):
         # Получаем температурные диапазоны из конфигурации
         zone_min_temps = entry.data.get(CONF_ZONE_MIN_TEMP, {})
         zone_max_temps = entry.data.get(CONF_ZONE_MAX_TEMP, {})
-        zone_temp_steps = entry.data.get(CONF_ZONE_TEMP_STEP, {})  # НОВОЕ
+        zone_temp_steps = entry.data.get(CONF_ZONE_TEMP_STEP, {})
         
         self._attr_min_temp = zone_min_temps.get(zone, DEFAULT_MIN_TEMP)
         self._attr_max_temp = zone_max_temps.get(zone, DEFAULT_MAX_TEMP)
         
-        # НОВОЕ: Устанавливаем индивидуальный шаг температуры для зоны
+        # Устанавливаем индивидуальный шаг температуры для зоны
         self._zone_temp_step = zone_temp_steps.get(zone, DEFAULT_ZONE_TEMP_STEP)
         self._attr_target_temperature_step = self._zone_temp_step
         
+        # ВАЖНО: Точность отображения 0.01°C для текущей температуры
+        # НЕ зависит от zone_temp_step! Всегда показываем полную точность датчика
+
+        self._temp_precision = 0.01     
+        self._precision = 0.01                
         # Получаем имя зоны из данных контроллера
         zone_data = coordinator.get_zone_data(zone)
         zone_name = zone_data.get("name", f"Zone {zone.upper()}")
@@ -123,6 +128,11 @@ class IOhouseClimateEntity(CoordinatorEntity, ClimateEntity):
         
         _LOGGER.debug("Создана климатическая сущность %s для зоны %s (%s) с диапазоном %.1f-%.1f°C, шаг %.3f°C", 
                      self._attr_unique_id, zone, zone_name, self._attr_min_temp, self._attr_max_temp, self._zone_temp_step)
+
+
+
+
+
 
     @property
     def device_info(self) -> dict[str, Any]:
@@ -144,24 +154,24 @@ class IOhouseClimateEntity(CoordinatorEntity, ClimateEntity):
 
     @property
     def current_temperature(self) -> float | None:
-        """Текущая температура с точностью по шагу зоны."""
+        """ИСПРАВЛЕНО: Текущая температура БЕЗ округления, как приходит от датчика."""
         zone_data = self.coordinator.get_zone_data(self.zone)
         temp = zone_data.get("temperature")
         
         if temp is not None:
-            # ИЗМЕНЕНО: Округляем до шага зоны вместо глобального TEMPERATURE_STEP
-            return round(float(temp) / self._zone_temp_step) * self._zone_temp_step
+            # ГЛАВНОЕ ИСПРАВЛЕНИЕ: Убрано округление, возвращаем как есть
+            return float(temp)
         
         return None
 
     @property
     def target_temperature(self) -> float | None:
-        """Целевая температура."""
+        """Целевая температура с округлением по шагу зоны."""
         zone_data = self.coordinator.get_zone_data(self.zone)
         target_temp = zone_data.get("target_temp")
         
         if target_temp is not None:
-            # ИЗМЕНЕНО: Округляем до шага зоны вместо глобального TEMPERATURE_STEP
+            # Округляем целевую температуру до шага зоны для корректного отображения
             return round(float(target_temp) / self._zone_temp_step) * self._zone_temp_step
         
         return None
@@ -219,7 +229,7 @@ class IOhouseClimateEntity(CoordinatorEntity, ClimateEntity):
             "eco_mode": zone_data.get("eco_mode", 0),
             "min_temp": self._attr_min_temp,
             "max_temp": self._attr_max_temp,
-            "temp_step": self._zone_temp_step,  # НОВОЕ: Добавляем шаг в атрибуты
+            "target_temp_step": self._zone_temp_step,
         }
 
     async def async_set_temperature(self, **kwargs) -> None:
@@ -227,7 +237,7 @@ class IOhouseClimateEntity(CoordinatorEntity, ClimateEntity):
         if (temperature := kwargs.get(ATTR_TEMPERATURE)) is None:
             return
         
-        # ИЗМЕНЕНО: Округляем до шага зоны вместо глобального TEMPERATURE_STEP
+        # Округляем до шага зоны только при установке температуры пользователем
         temperature = round(temperature / self._zone_temp_step) * self._zone_temp_step
         
         # Проверяем диапазон температуры

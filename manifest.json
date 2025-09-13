@@ -12,29 +12,42 @@
   "iot_class": "local_polling",
   "ssdp": [
     {
-      "st": "urn:schemas-upnp-org:device:HVAC_System:1",
-      "manufacturer": "iOhouse"
+      "st": "upnp:rootdevice",
+      "manufacturer": "iohouse LTD"
     },
     {
-      "st": "urn:schemas-upnp-org:device:Basic:1", 
-      "manufacturer": "iOhouse"
+      "st": "urn:schemas-upnp-org:device:Basic:1",
+      "manufacturer": "iohouse LTD"
     },
     {
       "st": "upnp:rootdevice",
-      "manufacturer": "iOhouse"
+      "modelName": "iohouse"
+    },
+    {
+      "st": "urn:schemas-upnp-org:device:Basic:1",
+      "modelName": "iohouse"
+    },
+    {
+      "st": "upnp:rootdevice",
+      "modelNumber": "929000226503"
     }
   ],
   "dhcp": [
-    {"hostname": "iOhouse*"},
-    {"hostname": "iOhouse*"},
-    {"hostname": "iOhouse*"},
-    {"hostname": "iOhouse*"},
+    {"hostname": "iohouse*"},
+    {"hostname": "ioHouse*"},
+    {"hostname": "thermozone*"},
     {"macaddress": "00:0C:43:*"},
-    {"macaddress": "00:50:C2:*"}
+    {"macaddress": "00:50:C2:*"},
+    {"macaddress": "FC:F5:C4:*"},
+    {"macaddress": "24:6F:28:*"},
+    {"macaddress": "CC:50:E3:*"},
+    {"macaddress": "30:AE:A4:*"}
   ],
   "zeroconf": [
-    "_iohouse._tcp.local.",
     "_http._tcp.local.",
+    "_iohouse._tcp.local.",
+    "_thermozone._tcp.local.",
+    "_climate._tcp.local.",
     "_device-info._tcp.local."
   ],
   "homekit": {}

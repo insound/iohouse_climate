@@ -155,20 +155,38 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
 
-    # ... остальные методы остаются без изменений ...
     async def async_step_ssdp(self, discovery_info: dict[str, Any]) -> FlowResult:
         """Обработка SSDP обнаружения."""
         _LOGGER.debug("SSDP обнаружение: %s", discovery_info)
         
-        from homeassistant.components import ssdp
+        # ИСПРАВЛЕНО: Совместимость с новыми версиями HA
+        try:
+            # Новый способ (объект)
+            manufacturer = getattr(discovery_info, 'upnp_manufacturer', "") or ""
+            model = getattr(discovery_info, 'upnp_model_name', "") or ""  # ИСПРАВЛЕНО: model_name вместо model_number
+            model_number = getattr(discovery_info, 'upnp_model_number', "") or ""
+            friendly_name = getattr(discovery_info, 'upnp_friendly_name', "") or ""
+            location = getattr(discovery_info, 'ssdp_location', "") or ""
+        except (AttributeError, TypeError):
+            # Старый способ (словарь)
+            from homeassistant.components import ssdp
+            manufacturer = discovery_info.get(ssdp.ATTR_UPNP_MANUFACTURER, "")
+            model = discovery_info.get(ssdp.ATTR_UPNP_MODEL_NAME, "")  # ИСПРАВЛЕНО
+            model_number = discovery_info.get(ssdp.ATTR_UPNP_MODEL_NUMBER, "")
+            friendly_name = discovery_info.get(ssdp.ATTR_UPNP_FRIENDLY_NAME, "")
+            location = discovery_info.get(ssdp.ATTR_SSDP_LOCATION, "")
         
-        manufacturer = discovery_info.get(ssdp.ATTR_UPNP_MANUFACTURER, "")
-        model = discovery_info.get(ssdp.ATTR_UPNP_MODEL_NUMBER, "")
-        friendly_name = discovery_info.get(ssdp.ATTR_UPNP_FRIENDLY_NAME, "")
-        location = discovery_info.get(ssdp.ATTR_SSDP_LOCATION, "")
+        # ИСПРАВЛЕНО: Проверяем точные значения из кода контроллера
+        is_iohouse = any([
+            "iohouse ltd" in manufacturer.lower(),           # "iohouse LTD"
+            "iohouse" in friendly_name.lower(),              # "ioHouse hostname"
+            model.lower() == "iohouse",                      # "iohouse"
+            model_number == "929000226503",                  # точный номер модели
+        ])
         
-        # Проверяем что это устройство iOhouse
-        if "iOhouse" not in manufacturer.lower() and "iOhouse" not in friendly_name.lower():
+        if not is_iohouse:
+            _LOGGER.debug("Не iOhouse устройство: manufacturer=%s, model=%s, friendly_name=%s", 
+                        manufacturer, model, friendly_name)
             return self.async_abort(reason="not_iohouse_device")
         
         # Извлекаем IP из location URL
@@ -177,10 +195,12 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             parsed_url = urlparse(location)
             host_ip = parsed_url.hostname
             port = parsed_url.port or DEFAULT_PORT
-        except Exception:
+        except Exception as err:
+            _LOGGER.error("Ошибка парсинга location URL %s: %s", location, err)
             return self.async_abort(reason="invalid_discovery_info")
         
         if not host_ip:
+            _LOGGER.error("Не удалось извлечь IP из location: %s", location)
             return self.async_abort(reason="invalid_discovery_info")
         
         # Устанавливаем уникальный ID
@@ -193,11 +213,16 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "name": friendly_name or f"iOhouse {host_ip}",
             "host": host_ip,
             "port": port,
+            "manufacturer": manufacturer,
+            "model": model,
         }
         
         self.host = host_ip
         self.port = port
         self.name = friendly_name or f"iOhouse {host_ip}"
+        
+        _LOGGER.info("Обнаружено iOhouse устройство: %s на %s:%s (manufacturer: %s, model: %s)", 
+                    friendly_name or "Unknown", host_ip, port, manufacturer, model)
         
         # Возвращаем форму подтверждения вместо автоматического добавления
         return await self.async_step_discovery_confirm()
@@ -206,11 +231,18 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Обработка DHCP обнаружения."""
         _LOGGER.debug("DHCP обнаружение: %s", discovery_info)
         
-        from homeassistant.components import dhcp
-        
-        hostname = discovery_info.get(dhcp.HOSTNAME, "")
-        ip_address = discovery_info.get(dhcp.IP_ADDRESS, "")
-        macaddress = discovery_info.get(dhcp.MAC_ADDRESS, "")
+        # ИСПРАВЛЕНО: Совместимость с новыми версиями HA
+        try:
+            # Новый способ (объект)
+            hostname = getattr(discovery_info, 'hostname', "") or ""
+            ip_address = getattr(discovery_info, 'ip', "") or ""
+            macaddress = getattr(discovery_info, 'macaddress', "") or ""
+        except (AttributeError, TypeError):
+            # Старый способ (словарь)
+            from homeassistant.components import dhcp
+            hostname = discovery_info.get(dhcp.HOSTNAME, "")
+            ip_address = discovery_info.get(dhcp.IP_ADDRESS, "")
+            macaddress = discovery_info.get(dhcp.MAC_ADDRESS, "")
         
         # Проверяем что это устройство iOhouse по hostname
         if not any(pattern in hostname.lower() for pattern in ["iOhouse", "iOhouse"]):
@@ -237,16 +269,26 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         
         return await self.async_step_discovery_confirm()
 
+
+
     async def async_step_zeroconf(self, discovery_info: dict[str, Any]) -> FlowResult:
         """Обработка Zeroconf обнаружения."""
         _LOGGER.debug("Zeroconf обнаружение: %s", discovery_info)
         
-        from homeassistant.components import zeroconf
-        
-        host = discovery_info.get(zeroconf.ATTR_HOST)
-        port = discovery_info.get(zeroconf.ATTR_PORT, DEFAULT_PORT)
-        hostname = discovery_info.get(zeroconf.ATTR_HOSTNAME, "")
-        name = discovery_info.get(zeroconf.ATTR_NAME, "")
+        # ИСПРАВЛЕНО: В новых версиях HA discovery_info это объект ZeroconfServiceInfo
+        try:
+            # Новый способ - обращение к атрибутам объекта
+            host = discovery_info.host
+            port = discovery_info.port or DEFAULT_PORT
+            hostname = discovery_info.hostname or ""
+            name = discovery_info.name or ""
+        except AttributeError:
+            # Fallback для старых версий HA - как словарь
+            from homeassistant.components import zeroconf
+            host = discovery_info.get(zeroconf.ATTR_HOST)
+            port = discovery_info.get(zeroconf.ATTR_PORT, DEFAULT_PORT)
+            hostname = discovery_info.get(zeroconf.ATTR_HOSTNAME, "")
+            name = discovery_info.get(zeroconf.ATTR_NAME, "")
         
         # Проверяем что это устройство iOhouse
         if not any("iOhouse" in text.lower() for text in [hostname, name] if text):
