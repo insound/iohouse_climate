@@ -1,7 +1,6 @@
 {
   "domain": "iohouse_climate",
   "name": "iOhouse Climate",
-  "icon": "mdi:home-thermometer-outline",
   "config_flow": true,
   "documentation": "https://github.com/insound/iohouse_climate",
   "issue_tracker": "https://github.com/insound/iohouse_climate/issues",
@@ -34,7 +33,6 @@
   ],
   "dhcp": [
     {"hostname": "iohouse*"},
-    {"hostname": "ioHouse*"},
     {"hostname": "thermozone*"},
     {"macaddress": "00:0C:43:*"},
     {"macaddress": "00:50:C2:*"},

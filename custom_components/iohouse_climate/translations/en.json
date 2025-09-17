@@ -1,54 +1,54 @@
 {
-    "config": {
-      "abort": {
-        "already_configured": "Device is already configured",
-        "cannot_connect": "Failed to connect to the device"
-      },
-      "step": {
-        "user": {
-          "data": {
-            "host": "Host/IP Address",
-            "port": "Port",
-            "name": "Device Name",
-            "zone": "Zone ID",
-            "api_key": "API Key (optional)"
-          },
-          "description": "Configure iOhouse Thermostat Integration",
-          "title": "iOhouse Thermostat Setup"
-        }
-      },
-      "error": {
-        "invalid_key": "Invalid API key",
-        "connection_error": "Connection error"
+  "config": {
+    "abort": {
+      "already_configured": "Device is already configured",
+      "cannot_connect": "Failed to connect to the device"
+    },
+    "step": {
+      "user": {
+        "data": {
+          "host": "Host/IP Address",
+          "port": "Port",
+          "name": "Device Name",
+          "zone": "Zone ID",
+          "api_key": "API Key (optional)"
+        },
+        "description": "Configure iOhouse Thermostat Integration",
+        "title": "iOhouse Thermostat Setup"
       }
     },
-    "state": {
-      "iohouse_climate.preset.away": "Away",
-      "iohouse_climate.preset.home": "Home",
-      "iohouse_climate.preset.comfort": "Comfort",
-      "iohouse_climate.preset.sleep": "Sleep",
-      "iohouse_climate.preset.eco": "Eco"
-    },
-    "options": {
-      "step": {
-        "init": {
-          "data": {
-            "scan_interval": "Update Interval (seconds)",
-            "retry_timeout": "Connection Retry Timeout"
-          }
-        }
-      }
-    },
-    "component": {
-      "iohouse_climate": {
-        "entity": {
-          "climate": {
-            "state_attributes": {
-              "modulation_level": "Modulation Level",
-              "power_state": "Power State"
-            }
-          }
+    "error": {
+      "invalid_key": "Invalid API key",
+      "connection_error": "Connection error"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "scan_interval": "Update Interval (seconds)",
+          "retry_timeout": "Connection Retry Timeout"
         }
       }
     }
+  },
+  "entity": {
+    "climate": {
+      "state_attributes": {
+        "modulation_level": "Modulation Level",
+        "power_state": "Power State"
+      }
+    }
+  },
+  "selector": {
+    "preset_mode": {
+      "options": {
+        "away": "Away",
+        "home": "Home",
+        "comfort": "Comfort",
+        "sleep": "Sleep",
+        "eco": "Eco"
+      }
+    }
   }
+}
