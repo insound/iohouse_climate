@@ -21,7 +21,6 @@ CONF_ZONE_TEMP_STEP = "zone_temp_step"  # НОВОЕ: шаг температу�
 # URL endpoints
 API_CLIMATE_ENDPOINT = "/api_climate"
 API_ACTION_ENDPOINT = "/apiaction"
-API_UPDATE_ENDPOINT = "/intapi"
 
 # Параметры температуры по умолчанию
 DEFAULT_MIN_TEMP = 1.0

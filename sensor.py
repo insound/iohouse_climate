@@ -1,4 +1,4 @@
-"""Sensor platform для отображения PWM термостатов iOhouse."""
+"""Sensor platform для отображения PWM термостатов iOhouse (без дублирования версии прошивки)."""
 from __future__ import annotations
 import logging
 from typing import Any
@@ -28,13 +28,13 @@ async def async_setup_entry(
     """Инициализация платформы сенсоров."""
     coordinator: IOhouseDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     
-    # Создаем PWM сенсоры для всех активных зон
+    # Создаем только PWM сенсоры для всех активных зон
     entities = []
     for zone in coordinator.zones:
         entities.append(IOhousePwmSensor(coordinator, entry, zone))
     
-    # Добавляем сенсор версии прошивки
-    entities.append(IOhouseFirmwareVersionSensor(coordinator, entry))
+    # УБРАНО: Сенсор версии прошивки (дублирует update entity)
+    # entities.append(IOhouseFirmwareVersionSensor(coordinator, entry))
     
     async_add_entities(entities, update_before_add=True)
     
@@ -146,73 +146,3 @@ class IOhousePwmSensor(CoordinatorEntity, SensorEntity):
         
         super()._handle_coordinator_update()
 
-class IOhouseFirmwareVersionSensor(CoordinatorEntity, SensorEntity):
-    """Сенсор версии прошивки iOhouse."""
-    
-    _attr_device_class = SensorDeviceClass.ENUM
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_icon = "mdi:chip"
-    _attr_has_entity_name = True
-    _attr_name = "Firmware Version"
-
-    def __init__(
-        self,
-        coordinator: IOhouseDataUpdateCoordinator,
-        entry: ConfigEntry,
-    ) -> None:
-        """Инициализация сенсора версии прошивки."""
-        super().__init__(coordinator)
-        
-        self.coordinator = coordinator
-        self.entry = entry
-        self._device_name = entry.data[CONF_NAME]
-        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_firmware_version"
-        
-        _LOGGER.debug("Создан сенсор версии прошивки %s", self._attr_unique_id)
-
-    @property
-    def device_info(self) -> dict[str, Any]:
-        """Информация об устройстве."""
-        return {
-            "identifiers": {(DOMAIN, self.entry.entry_id)},
-            "name": self._device_name,
-            "manufacturer": "iOhouse",
-            "model": "Thermozone Controller",
-        }
-
-    @property
-    def available(self) -> bool:
-        """Доступность сенсора."""
-        return self.coordinator.last_update_success
-
-    @property
-    def native_value(self) -> str | None:
-        """Текущая версия прошивки."""
-        common_data = self.coordinator.get_common_data()
-        version = common_data.get("fWversion")
-        
-        if version is None:
-            return None
-            
-        return str(version)
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Дополнительные атрибуты состояния."""
-        common_data = self.coordinator.get_common_data()
-        
-        attributes = {
-            "current_version": self.native_value,
-            "device_name": self._device_name,
-        }
-        
-        # Добавляем информацию о доступных обновлениях
-        if common_data.get("avalible_update") == 1:
-            update_version = common_data.get("u_version")
-            if update_version:
-                attributes["available_update"] = str(update_version)
-                attributes["update_available"] = True
-        else:
-            attributes["update_available"] = False
-        
-        return attributes

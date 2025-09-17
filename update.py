@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import time 
 from typing import Any
 
 from homeassistant.components.update import (
@@ -200,13 +201,9 @@ class IOhouseFirmwareUpdateEntity(CoordinatorEntity, UpdateEntity):
             
             # Создаем умную заморозку для флага обновления
             # Сбрасываем флаг сразу, чтобы UI показал что обновление началось
-            self.coordinator.create_common_freeze("avalible_update", 0)
+            # self.coordinator.create_common_freeze("avalible_update", 0)
             
-            # Создаем заморозку для версии прошивки если указана новая версия
-            if version or self.latest_version:
-                target_version = version or self.latest_version
-                self.coordinator.create_common_freeze("fWversion", target_version)
-            
+
             # Обновляем состояние перед отправкой команды
             await self.coordinator.async_request_refresh()
             
@@ -216,6 +213,7 @@ class IOhouseFirmwareUpdateEntity(CoordinatorEntity, UpdateEntity):
             if success:
                 _LOGGER.info("Команда обновления прошивки %s отправлена успешно", self._device_name)
                 
+            
                 # Показываем уведомление о начале обновления
                 await self._show_update_notification(
                     message=(

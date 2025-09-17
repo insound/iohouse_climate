@@ -22,7 +22,6 @@ from .const import (
     DEFAULT_ZONES,
     API_CLIMATE_ENDPOINT,
     API_ACTION_ENDPOINT,
-    API_UPDATE_ENDPOINT,
     DISCOVERY_INTERVAL,
     REGULAR_UPDATE_INTERVAL,
     FAST_UPDATE_INTERVAL,
@@ -332,7 +331,7 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.debug("Команда выполнена успешно: %s", command)
                     
                     # КЛЮЧЕВАЯ НОВАЯ ЛОГИКА: Мгновенное обновление кэша и состояния
-                    await self._apply_confirmed_values(result_data, current_time)
+                    # await self._apply_confirmed_values(result_data, current_time)
                     
                     # Немедленно обновляем UI
                     await self._trigger_immediate_update()
@@ -395,7 +394,7 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def send_update_command(self) -> bool:
         """Отправка команды обновления прошивки."""
-        url = f"http://{self.host}:{self.port}{API_UPDATE_ENDPOINT}?webio_update_flash=1"
+        url = f"http://{self.host}:{self.port}{API_ACTION_ENDPOINT}?flashupdate=1"
         
         if self.api_key:
             url += f"&apikey_rest={self.api_key}"
