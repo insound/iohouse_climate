@@ -1,10 +1,5 @@
 # iOhouse Climate Integration for Home Assistant
 
-[![GitHub Release][releases-shield]][releases]
-[![GitHub Activity][commits-shield]][commits]
-[![License][license-shield]](LICENSE)
-[![hacs][hacsbadge]][hacs]
-
 **Интеграция Home Assistant для термо-контроллеров iOhouse Thermozone AB4**
 
 Эта интеграция обеспечивает полную интеграцию климат-контроллеров iOhouse с Home Assistant, предоставляя управление несколькими зонами отопления, мониторинг состояния системы и автоматическое обнаружение устройств.
