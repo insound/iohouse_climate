@@ -1,0 +1,10 @@
+{
+    "name": "iOhouse Climate",
+    "content_in_root": false,
+    "filename": "iohouse_climate.zip",
+    "country": ["RU"],
+    "homeassistant": "2023.1.0",
+    "iot_class": "local_polling",
+    "render_readme": true,
+    "hacs": "1.32.0"
+}
