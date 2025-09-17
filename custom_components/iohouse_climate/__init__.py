@@ -36,6 +36,7 @@ PLATFORMS = [
 
 # Версия конфигурации для миграции
 CONFIG_VERSION = 2
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 # Карта транслитерации кириллицы в латиницу
 CYRILLIC_TO_LATIN = {

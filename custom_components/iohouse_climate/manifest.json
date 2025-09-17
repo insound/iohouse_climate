@@ -1,14 +1,25 @@
 {
   "domain": "iohouse_climate",
   "name": "iOhouse Climate",
-  "config_flow": true,
-  "documentation": "https://github.com/insound/iohouse_climate",
-  "issue_tracker": "https://github.com/insound/iohouse_climate/issues",
-  "dependencies": ["network"],
   "codeowners": ["@insound"],
-  "requirements": ["aiohttp>=3.8.0"],
-  "version": "2.0.1",
+  "config_flow": true,
+  "dependencies": ["network"],
+  "dhcp": [
+    {"hostname": "iohouse*"},
+    {"hostname": "iohouse*"},
+    {"hostname": "thermozone*"},
+    {"macaddress": "00:0C:43:*"},
+    {"macaddress": "00:50:C2:*"},
+    {"macaddress": "FC:F5:C4:*"},
+    {"macaddress": "24:6F:28:*"},
+    {"macaddress": "CC:50:E3:*"},
+    {"macaddress": "30:AE:A4:*"}
+  ],
+  "documentation": "https://github.com/insound/iohouse_climate",
+  "homekit": {},
   "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/insound/iohouse_climate/issues",
+  "requirements": ["aiohttp>=3.8.0"],
   "ssdp": [
     {
       "st": "upnp:rootdevice",
@@ -31,22 +42,12 @@
       "modelNumber": "929000226503"
     }
   ],
-  "dhcp": [
-    {"hostname": "iohouse*"},
-    {"hostname": "thermozone*"},
-    {"macaddress": "00:0C:43:*"},
-    {"macaddress": "00:50:C2:*"},
-    {"macaddress": "FC:F5:C4:*"},
-    {"macaddress": "24:6F:28:*"},
-    {"macaddress": "CC:50:E3:*"},
-    {"macaddress": "30:AE:A4:*"}
-  ],
+  "version": "2.0.1",
   "zeroconf": [
     "_http._tcp.local.",
     "_iohouse._tcp.local.",
     "_thermozone._tcp.local.",
     "_climate._tcp.local.",
     "_device-info._tcp.local."
-  ],
-  "homekit": {}
+  ]
 }

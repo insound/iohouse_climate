@@ -32,14 +32,6 @@
       }
     }
   },
-  "entity": {
-    "climate": {
-      "state_attributes": {
-        "modulation_level": "Modulation Level",
-        "power_state": "Power State"
-      }
-    }
-  },
   "selector": {
     "preset_mode": {
       "options": {
