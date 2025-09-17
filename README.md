@@ -1,3 +1,6 @@
+[![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
+
+
 # iOhouse Climate Integration for Home Assistant
 
 **Интеграция Home Assistant для термо-контроллеров iOhouse Thermozone AB4**
