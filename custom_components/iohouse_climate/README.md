@@ -1,3 +1,3 @@
-# iOhouse Climate for Thermozone ab4
+# iOhouse Climate for Thermozone AB4
 
-## Home assistant integration for thermocontrollers with AI control zones
+This package is built around the grouped `api_climate`/`apiaction` v2 contract.

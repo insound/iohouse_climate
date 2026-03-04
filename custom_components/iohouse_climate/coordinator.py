@@ -1,37 +1,36 @@
-"""Координатор данных для iOhouse Climate с мгновенным обновлением состояния и быстрым повтором."""
+"""DataUpdateCoordinator for ioHouse api_climate/apiaction v2."""
 from __future__ import annotations
+
 import asyncio
 import logging
 import time
-from datetime import timedelta
-from typing import Any, Dict, Set
+from typing import Any
 
 import aiohttp
 import async_timeout
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .api_v2 import build_api_url, parse_climate_payload
 from .const import (
-    DOMAIN,
+    API_ACTION_ENDPOINT,
+    API_CLIMATE_ENDPOINT,
+    CONF_API_KEY,
     CONF_HOST,
     CONF_PORT,
-    CONF_API_KEY,
-    CONF_ZONES,
-    DEFAULT_ZONES,
-    API_CLIMATE_ENDPOINT,
-    API_ACTION_ENDPOINT,
-    DISCOVERY_INTERVAL,
+    DOMAIN,
+    EVENT_UNITS_CHANGED,
+    FULL_REFRESH_INTERVAL,
     REGULAR_UPDATE_INTERVAL,
-    FAST_UPDATE_INTERVAL,
-    ERROR_RETRY_DELAY,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-class IOhouseDataUpdateCoordinator(DataUpdateCoordinator):
-    """Координатор данных для iOhouse с мгновенным обновлением состояния и быстрым повтором."""
+
+class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+    """Coordinator for grouped api_climate v2 payloads."""
 
     def __init__(
         self,
@@ -39,409 +38,204 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator):
         session: aiohttp.ClientSession,
         entry: ConfigEntry,
     ) -> None:
-        """Инициализация координатора."""
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             update_interval=REGULAR_UPDATE_INTERVAL,
         )
-        
         self.session = session
         self.entry = entry
         self.host = entry.data[CONF_HOST]
         self.port = entry.data.get(CONF_PORT, 80)
         self.api_key = entry.data.get(CONF_API_KEY, "")
-        
-        _LOGGER.debug("Координатор инициализирован: host=%s, port=%s", self.host, self.port)
-        
-        # Фазы обновления
-        self.active_zones: set[str] = set(entry.data.get(CONF_ZONES, []))
-        self.last_discovery: float = 0
-        self.discovery_interval = DISCOVERY_INTERVAL.total_seconds()
-        
-        # НОВАЯ ЛОГИКА: Состояние ошибок и быстрого повтора
-        self._error_count = 0
-        self._max_errors = 3
-        self._fast_mode = False
-        self._fast_mode_until: float = 0
-        
-        # НОВОЕ: Логика быстрого повтора при первой ошибке
-        self._first_error_retry = False  # Флаг первой ошибки
-        self._retry_in_progress = False  # Флаг выполнения повтора
-        self._quick_retry_delay = 5.0   # 5 секунд на быстрый повтор
-        
-        # НОВАЯ ЛОГИКА: Кэш подтвержденных значений для мгновенного обновления
-        self._confirmed_cache: dict[str, Any] = {}  # Кэш подтвержденных значений
-        self._cache_timestamps: dict[str, float] = {}  # Время обновления кэша
-        self._cache_ttl = 2.0  # Время жизни кэша: 2 секунды
-        
-        # Защита от дублирования команд
-        self._last_commands: dict[str, float] = {}  # {command: timestamp}
-        self._command_debounce = 1.5  # Защита от повтора команды
+
+        self._cfg_hash = ""
+        self._unit_order: list[str] = []
+        self._units: dict[str, dict[str, Any]] = {}
+        self._common: dict[str, Any] = {}
+        self._last_full_refresh = 0.0
+        self._last_commands: dict[tuple[tuple[str, str], ...], float] = {}
+        self._command_debounce = 1.5
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Основной метод обновления данных с логикой быстрого повтора."""
+        """Fetch and normalize controller data."""
         try:
-            current_time = time.time()
-            
-            # Проверяем нужна ли фаза обнаружения
-            if (current_time - self.last_discovery) > self.discovery_interval:
-                _LOGGER.debug("Запуск фазы обнаружения зон")
-                discovery_data = await self._discovery_phase()
-                self.last_discovery = current_time
-                
-                # Если обнаружены новые зоны, обновляем активные зоны
-                if discovery_data and "zones" in discovery_data:
-                    new_active_zones = set(discovery_data["zones"].keys())
-                    if new_active_zones != self.active_zones:
-                        _LOGGER.info("Обнаружены изменения в зонах: %s -> %s", 
-                                   self.active_zones, new_active_zones)
-                        self.active_zones = new_active_zones
-                        self.hass.bus.async_fire(f"{DOMAIN}_zones_changed", {
-                            "entry_id": self.entry.entry_id,
-                            "zones": list(self.active_zones)
-                        })
-                
-                return discovery_data
-            
-            # Фаза регулярного обновления
-            return await self._regular_update_phase()
-            
+            needs_full_refresh = not self._cfg_hash or self._needs_periodic_full_refresh()
+            payload = await self._fetch_climate_payload(
+                scope="full" if needs_full_refresh else "state",
+                cfg_hash=None if needs_full_refresh else self._cfg_hash,
+            )
+
+            if (
+                payload.get("cfg_changed") == 1
+                and "cfg" not in payload
+                and not needs_full_refresh
+            ):
+                payload = await self._fetch_climate_payload(scope="full")
+
+            return self._apply_payload(payload)
         except ConfigEntryAuthFailed:
             raise
+        except asyncio.TimeoutError as err:
+            raise UpdateFailed("Timeout while talking to controller") from err
+        except aiohttp.ClientError as err:
+            raise UpdateFailed(f"HTTP error while talking to controller: {err}") from err
         except Exception as err:
-            # НОВАЯ ЛОГИКА: Обработка ошибок с быстрым повтором
-            return await self._handle_update_error(err)
+            raise UpdateFailed(f"Unexpected update error: {err}") from err
 
-    async def _handle_update_error(self, err: Exception) -> dict[str, Any]:
-        """Обработка ошибок обновления с логикой быстрого повтора."""
-        
-        # НОВОЕ: Если это первая ошибка и повтор еще не выполнялся
-        if self._error_count == 0 and not self._first_error_retry:
-            _LOGGER.warning("Первая ошибка обновления: %s. Попытка быстрого повтора через %s сек", 
-                          err, self._quick_retry_delay)
-            
-            self._first_error_retry = True
-            self._retry_in_progress = True
-            
-            # Запускаем быстрый повтор через 5 секунд
-            try:
-                await asyncio.sleep(self._quick_retry_delay)
-                
-                _LOGGER.debug("Выполняем быстрый повтор после первой ошибки")
-                retry_data = await self._regular_update_phase()
-                
-                # Если повтор успешен - сбрасываем флаги ошибок
-                self._first_error_retry = False
-                self._retry_in_progress = False
-                self._error_count = 0
-                
-                _LOGGER.info("Быстрый повтор успешен - соединение восстановлено")
-                return retry_data
-                
-            except Exception as retry_err:
-                _LOGGER.error("Быстрый повтор неудачен: %s. Entity будет помечен как недоступный", retry_err)
-                self._first_error_retry = False
-                self._retry_in_progress = False
-                self._error_count = 1  # Помечаем как первую "настоящую" ошибку
-                
-                # Теперь выбрасываем исключение чтобы entity стал недоступным
-                raise UpdateFailed(f"Ошибка обновления данных после повтора: {retry_err}")
-        
-        # Обычная логика обработки ошибок (вторая и последующие ошибки)
-        self._error_count += 1
-        self._first_error_retry = False  # Сбрасываем флаг
-        
-        if self._error_count >= self._max_errors:
-            _LOGGER.warning("Множественные ошибки (%d), переход в режим восстановления", self._error_count)
-            self.update_interval = ERROR_RETRY_DELAY
-            try:
-                return await self._discovery_phase()
-            except Exception:
-                pass
-        
-        raise UpdateFailed(f"Ошибка обновления данных: {err}")
-
-    async def _discovery_phase(self) -> dict[str, Any]:
-        """Фаза обнаружения - определение всех активных зон."""
-        zone_params = "&".join([f"zone_{zone}=1" for zone in DEFAULT_ZONES])
-        url = f"http://{self.host}:{self.port}{API_CLIMATE_ENDPOINT}?{zone_params}&common=read"
-        
+    async def _fetch_climate_payload(
+        self,
+        scope: str,
+        cfg_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """Read api_climate payload."""
+        params: dict[str, Any] = {"scope": scope}
+        if cfg_hash:
+            params["cfg_hash"] = cfg_hash
         if self.api_key:
-            url += f"&apikey_rest={self.api_key}"
+            params["apikey_rest"] = self.api_key
 
-        try:
-            async with async_timeout.timeout(8):
-                response = await self.session.get(url)
-                
-                if response.status == 401:
-                    raise ConfigEntryAuthFailed("Invalid API key")
-                elif response.status != 200:
-                    raise UpdateFailed(f"HTTP {response.status}")
-                
-                raw_data = await response.json()
-                return self._process_data_with_cache(raw_data, DEFAULT_ZONES)
-                
-        except asyncio.TimeoutError:
-            raise UpdateFailed("Timeout during discovery phase")
+        url = build_api_url(self.host, self.port, API_CLIMATE_ENDPOINT, params)
+        timeout_seconds = 10 if scope == "full" else 6
 
-    async def _regular_update_phase(self) -> dict[str, Any]:
-        """Фаза регулярного обновления - только активные зоны."""
-        if not self.active_zones:
-            _LOGGER.warning("Нет активных зон, переключаемся на обнаружение")
-            return await self._discovery_phase()
-        
-        zone_params = "&".join([f"zone_{zone}=1" for zone in self.active_zones])
-        url = f"http://{self.host}:{self.port}{API_CLIMATE_ENDPOINT}?{zone_params}&common=read"
-        
+        async with async_timeout.timeout(timeout_seconds):
+            response = await self.session.get(url)
+            if response.status == 401:
+                raise ConfigEntryAuthFailed("Invalid API key")
+            if response.status != 200:
+                raise UpdateFailed(f"HTTP {response.status}")
+            return await response.json()
+
+    def _apply_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Normalize payload and keep local caches in sync."""
+        previous_units = set(self._units)
+        data = parse_climate_payload(
+            payload,
+            previous_units=self._units,
+            previous_order=self._unit_order,
+            previous_common=self._common,
+        )
+
+        self._cfg_hash = data.get("cfg_hash", "") or self._cfg_hash
+        self._unit_order = data.get("unit_order", [])
+        self._units = data.get("units", {})
+        self._common = data.get("common", {})
+        if "cfg" in payload:
+            self._last_full_refresh = time.time()
+
+        current_units = set(self._units)
+        if previous_units != current_units:
+            self.hass.bus.async_fire(
+                EVENT_UNITS_CHANGED,
+                {
+                    "entry_id": self.entry.entry_id,
+                    "unit_ids": self.units,
+                },
+            )
+
+        return data
+
+    def _needs_periodic_full_refresh(self) -> bool:
+        """Refresh full config periodically even if cfg_hash did not change."""
+        return (time.time() - self._last_full_refresh) >= FULL_REFRESH_INTERVAL.total_seconds()
+
+    async def send_zone_command(self, unit_id: str, params: dict[str, Any]) -> bool:
+        """Send a device-level v2 action command."""
+        payload = dict(params)
+        payload["uid"] = unit_id
+        return await self._send_action_command(payload)
+
+    async def send_system_command(self, params: dict[str, Any]) -> bool:
+        """Send a controller-level v2 action command."""
+        return await self._send_action_command(dict(params))
+
+    async def send_update_command(self) -> bool:
+        """Trigger firmware update."""
+        return await self.send_system_command({"flashupdate": 1})
+
+    async def _send_action_command(self, params: dict[str, Any]) -> bool:
+        """Send apiaction and apply returned state immediately."""
+        command_key = tuple(sorted((key, str(value)) for key, value in params.items()))
+        now = time.time()
+        last_sent = self._last_commands.get(command_key)
+        if last_sent is not None and (now - last_sent) < self._command_debounce:
+            return True
+
+        request_params = dict(params)
         if self.api_key:
-            url += f"&apikey_rest={self.api_key}"
+            request_params["apikey_rest"] = self.api_key
+
+        url = build_api_url(self.host, self.port, API_ACTION_ENDPOINT, request_params)
 
         try:
             async with async_timeout.timeout(6):
                 response = await self.session.get(url)
-                
                 if response.status == 401:
-                    raise ConfigEntryAuthFailed("Invalid API key")
-                elif response.status != 200:
-                    raise UpdateFailed(f"HTTP {response.status}")
-                
-                raw_data = await response.json()
-                return self._process_data_with_cache(raw_data, self.active_zones)
-                
+                    _LOGGER.error("Authentication failed while sending command: %s", params)
+                    return False
+                if response.status != 200:
+                    _LOGGER.error("HTTP %s while sending command: %s", response.status, params)
+                    return False
+
+                payload = await response.json()
         except asyncio.TimeoutError:
-            raise UpdateFailed("Timeout during regular update")
-
-    def _process_data_with_cache(self, raw_data: dict, zones_to_process: set[str]) -> dict[str, Any]:
-        """Обработка данных с применением кэша подтвержденных значений."""
-        processed_data = {
-            "zones": {},
-            "common": {},
-            "active_zones": set(),
-            "timestamp": time.time()
-        }
-        
-        current_time = time.time()
-        
-        # Очистка устаревшего кэша
-        expired_keys = [k for k, timestamp in self._cache_timestamps.items() 
-                       if current_time - timestamp > self._cache_ttl]
-        for key in expired_keys:
-            if key in self._confirmed_cache:
-                del self._confirmed_cache[key]
-                del self._cache_timestamps[key]
-                _LOGGER.debug("Истек кэш для %s", key)
-        
-        # Обработка зональных данных
-        for zone in zones_to_process:
-            zone_data = {}
-            for key, value in raw_data.items():
-                if key.startswith(f"{zone}_"):
-                    param_name = key[3:]  # Убираем префикс зоны
-                    cache_key = f"{zone}_{param_name}"
-                    
-                    # НОВАЯ ЛОГИКА: Используем кэш только если он свежий
-                    if cache_key in self._confirmed_cache and cache_key in self._cache_timestamps:
-                        if current_time - self._cache_timestamps[cache_key] < self._cache_ttl:
-                            zone_data[param_name] = self._confirmed_cache[cache_key]
-                            _LOGGER.debug("Использован кэш для %s = %s", 
-                                        cache_key, self._confirmed_cache[cache_key])
-                        else:
-                            # Кэш устарел, используем свежие данные
-                            zone_data[param_name] = value
-                    else:
-                        # Нет кэша, используем актуальные данные
-                        zone_data[param_name] = value
-            
-            if zone_data:
-                processed_data["zones"][zone] = zone_data
-                processed_data["active_zones"].add(zone)
-        
-        # Обработка общих данных
-        common_keys = [
-            "summermode", "avalible_update", "fWversion", "u_version"
-        ] + [f"out{i}" for i in range(1, 9)]
-        
-        for key in common_keys:
-            if key in raw_data:
-                # Применяем ту же логику кэширования для общих данных
-                if key in self._confirmed_cache and key in self._cache_timestamps:
-                    if current_time - self._cache_timestamps[key] < self._cache_ttl:
-                        processed_data["common"][key] = self._confirmed_cache[key]
-                        _LOGGER.debug("Использован кэш для общих данных %s = %s", 
-                                    key, self._confirmed_cache[key])
-                    else:
-                        processed_data["common"][key] = raw_data[key]
-                else:
-                    processed_data["common"][key] = raw_data[key]
-        
-        # НОВОЕ: Сброс счетчика ошибок и флагов при успешном обновлении
-        self._error_count = 0
-        self._first_error_retry = False
-        self._retry_in_progress = False
-        
-        # Возврат к нормальному интервалу обновления
-        if self.update_interval != REGULAR_UPDATE_INTERVAL:
-            self.update_interval = REGULAR_UPDATE_INTERVAL
-        
-        # Проверяем режим быстрого обновления
-        if self._fast_mode and time.time() > self._fast_mode_until:
-            self._fast_mode = False
-            self.update_interval = REGULAR_UPDATE_INTERVAL
-            _LOGGER.debug("Выход из режима быстрого обновления")
-        
-        return processed_data
-
-    async def send_command(self, command: str) -> bool:
-        """Отправка команды на контроллер с мгновенным обновлением состояния."""
-        current_time = time.time()
-        
-        # ЗАЩИТА ОТ ДУБЛИРОВАНИЯ КОМАНД
-        if command in self._last_commands:
-            time_since_last = current_time - self._last_commands[command]
-            if time_since_last < self._command_debounce:
-                _LOGGER.debug("Команда %s заблокирована (повтор через %.1f сек)", 
-                             command, time_since_last)
-                return True
-        
-        self._last_commands[command] = current_time
-        
-        url = f"http://{self.host}:{self.port}{API_ACTION_ENDPOINT}?{command}"
-        
-        if self.api_key:
-            url += f"&apikey_rest={self.api_key}"
-
-        _LOGGER.debug("Отправка команды: %s", command)
-
-        try:
-            async with async_timeout.timeout(5):
-                response = await self.session.get(url)
-                
-                if response.status == 401:
-                    _LOGGER.error("Ошибка аутентификации при отправке команды")
-                    return False
-                elif response.status != 200:
-                    _LOGGER.error("HTTP ошибка %s при отправке команды", response.status)
-                    return False
-                
-                result_data = await response.json()
-                
-                if result_data.get("status") in ["ok", "ок"]:
-                    _LOGGER.debug("Команда выполнена успешно: %s", command)
-                    
-                    # КЛЮЧЕВАЯ НОВАЯ ЛОГИКА: Мгновенное обновление кэша и состояния
-                    # await self._apply_confirmed_values(result_data, current_time)
-                    
-                    # Немедленно обновляем UI
-                    await self._trigger_immediate_update()
-                    
-                    return True
-                else:
-                    _LOGGER.error("Команда отклонена контроллером: %s", result_data)
-                    return False
-                    
+            _LOGGER.error("Timeout while sending command: %s", params)
+            return False
+        except aiohttp.ClientError as err:
+            _LOGGER.error("HTTP client error while sending command %s: %s", params, err)
+            return False
         except Exception as err:
-            _LOGGER.error("Ошибка отправки команды: %s", err)
+            _LOGGER.error("Unexpected error while sending command %s: %s", params, err)
             return False
 
-    async def _apply_confirmed_values(self, response_data: dict, timestamp: float) -> None:
-        """Мгновенное применение подтвержденных значений в кэш."""
-        for key, value in response_data.items():
-            if key == "status":
-                continue
-                
-            # Сохраняем подтвержденное значение в кэш
-            self._confirmed_cache[key] = value
-            self._cache_timestamps[key] = timestamp
-            
-            _LOGGER.debug("Кэширован подтвержденный результат %s = %s", key, value)
-
-    async def _trigger_immediate_update(self) -> None:
-        """Немедленное обновление UI после выполнения команды."""
-        try:
-            # Обновляем данные координатора без сетевого запроса
-            if self.data:
-                # Создаем обновленную копию данных с применением кэша
-                updated_data = dict(self.data)
-                current_time = time.time()
-                
-                # Применяем кэшированные значения к текущим данным
-                if "zones" in updated_data:
-                    for zone, zone_data in updated_data["zones"].items():
-                        for param_name in list(zone_data.keys()):
-                            cache_key = f"{zone}_{param_name}"
-                            if (cache_key in self._confirmed_cache and 
-                                cache_key in self._cache_timestamps and
-                                current_time - self._cache_timestamps[cache_key] < self._cache_ttl):
-                                zone_data[param_name] = self._confirmed_cache[cache_key]
-                
-                if "common" in updated_data:
-                    for key in list(updated_data["common"].keys()):
-                        if (key in self._confirmed_cache and 
-                            key in self._cache_timestamps and
-                            current_time - self._cache_timestamps[key] < self._cache_ttl):
-                            updated_data["common"][key] = self._confirmed_cache[key]
-                
-                # Принудительно обновляем данные и уведомляем слушателей
-                self.data = updated_data
-                self.async_update_listeners()
-                
-                _LOGGER.debug("Выполнено немедленное обновление UI")
-        
-        except Exception as err:
-            _LOGGER.error("Ошибка немедленного обновления UI: %s", err)
-
-    async def send_update_command(self) -> bool:
-        """Отправка команды обновления прошивки."""
-        url = f"http://{self.host}:{self.port}{API_ACTION_ENDPOINT}?flashupdate=1"
-        
-        if self.api_key:
-            url += f"&apikey_rest={self.api_key}"
-
-        try:
-            async with async_timeout.timeout(30):
-                response = await self.session.get(url)
-                
-                if response.status == 200:
-                    _LOGGER.info("Команда обновления прошивки отправлена")
-                    return True
-                else:
-                    _LOGGER.error("Ошибка отправки команды обновления: HTTP %s", response.status)
-                    return False
-                    
-        except Exception as err:
-            _LOGGER.error("Ошибка отправки команды обновления: %s", err)
+        ok = payload.get("ok") == 1 or payload.get("err") == "noop"
+        if not ok:
+            _LOGGER.error("Controller rejected command %s: %s", params, payload)
             return False
+
+        self._last_commands[command_key] = now
+        self.async_set_updated_data(self._apply_payload(payload))
+
+        if payload.get("cfg_changed") == 1 and "cfg" not in payload:
+            await self.async_request_refresh()
+
+        return True
+
+    def get_unit_data(self, unit_id: str) -> dict[str, Any]:
+        """Return data for a specific unit."""
+        if not self.data:
+            return {}
+        return self.data.get("units", {}).get(unit_id, {})
 
     def get_zone_data(self, zone: str) -> dict[str, Any]:
-        """Получение данных конкретной зоны."""
-        if not self.data or "zones" not in self.data:
-            return {}
-        return self.data["zones"].get(zone, {})
+        """Backward-compatible alias used by existing entity code."""
+        return self.get_unit_data(zone)
 
     def get_common_data(self) -> dict[str, Any]:
-        """Получение общих данных."""
-        if not self.data or "common" not in self.data:
+        """Return system/common state."""
+        if not self.data:
             return {}
-        return self.data["common"]
+        return self.data.get("common", {})
 
     @property
-    def zones(self) -> set[str]:
-        """Активные зоны."""
-        return self.active_zones.copy()
+    def units(self) -> list[str]:
+        """Return known unit IDs in controller order."""
+        return [unit_id for unit_id in self._unit_order if unit_id in self._units]
+
+    @property
+    def zones(self) -> list[str]:
+        """Backward-compatible alias for unit IDs."""
+        return self.units
+
+    @property
+    def available_units(self) -> set[str]:
+        """Return unit IDs present in the latest state payload."""
+        if not self.data:
+            return set()
+        return set(self.data.get("active_units", set()))
 
     @property
     def available_zones(self) -> set[str]:
-        """Зоны с доступными данными."""
-        if not self.data or "active_zones" not in self.data:
-            return set()
-        return self.data["active_zones"].copy()
-
-    def create_common_freeze(self, param: str, value: Any) -> None:
-        """Создание заморозки для общих параметров (для совместимости)."""
-        # Используем новую систему кэширования вместо старой заморозки
-        current_time = time.time()
-        self._confirmed_cache[param] = value
-        self._cache_timestamps[param] = current_time
-        _LOGGER.debug("Создан кэш для общего параметра %s = %s", param, value)
+        """Backward-compatible alias for unit IDs."""
+        return self.available_units

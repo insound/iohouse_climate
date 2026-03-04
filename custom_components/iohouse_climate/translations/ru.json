@@ -1,0 +1,77 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Устройство уже настроено",
+      "already_in_progress": "Настройка этого устройства уже выполняется",
+      "cannot_connect": "Не удалось подключиться к устройству",
+      "not_iohouse_device": "Обнаруженное устройство не похоже на контроллер iOhouse",
+      "invalid_discovery_info": "Недостаточно данных для настройки обнаруженного устройства",
+      "user_rejected": "Настройка устройства отменена"
+    },
+    "step": {
+      "user": {
+        "title": "Настройка iOhouse Thermostat",
+        "description": "Укажите параметры подключения к контроллеру iOhouse",
+        "data": {
+          "host": "IP-адрес / хост",
+          "port": "Порт",
+          "name": "Имя устройства",
+          "api_key": "API-ключ (если используется)"
+        }
+      },
+      "discovery_confirm": {
+        "title": "Подтверждение устройства",
+        "description": "Найден контроллер iOhouse {name} по адресу {host}:{port}. Добавить его?",
+        "data": {
+          "add_device": "Добавить это устройство"
+        }
+      },
+      "discovery_setup": {
+        "title": "Параметры контроллера",
+        "description": "Проверьте параметры контроллера перед настройкой устройств на {host}:{port}.",
+        "data": {
+          "name": "Имя устройства",
+          "api_key": "API-ключ (если используется)"
+        }
+      },
+      "zone_config": {
+        "title": "Пределы температуры",
+        "description": "Устройство {unit_index} из {unit_total}: {unit_name}",
+        "data": {
+          "min_temp": "Минимальная температура",
+          "max_temp": "Максимальная температура",
+          "temp_step": "Шаг температуры"
+        }
+      }
+    },
+    "error": {
+      "invalid_key": "Неверный API-ключ",
+      "connection_error": "Ошибка подключения",
+      "discovery_failed": "Не удалось получить список устройств с контроллера"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Пределы температуры",
+        "description": "Устройство {unit_index} из {unit_total}: {unit_name}",
+        "data": {
+          "min_temp": "Минимальная температура",
+          "max_temp": "Максимальная температура",
+          "temp_step": "Шаг температуры"
+        }
+      }
+    }
+  },
+  "selector": {
+    "preset_mode": {
+      "options": {
+        "away": "Нет дома",
+        "home": "Дом",
+        "comfort": "Комфорт",
+        "sleep": "Ночь",
+        "eco": "Эко"
+      }
+    }
+  }
+}

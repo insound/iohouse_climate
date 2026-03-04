@@ -1,5 +1,6 @@
-"""Climate platform для термостатов iOhouse с исправленным отображением температуры."""
+"""Climate entities for ioHouse units."""
 from __future__ import annotations
+
 import logging
 from typing import Any
 
@@ -15,304 +16,240 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import (
-    DOMAIN,
-    CONF_NAME,
-    CONF_ZONE_MIN_TEMP,
-    CONF_ZONE_MAX_TEMP,
-    CONF_ZONE_TEMP_STEP,
-    DEFAULT_MIN_TEMP,
-    DEFAULT_MAX_TEMP,
-    DEFAULT_ZONE_TEMP_STEP,
-    TEMPERATURE_STEP,  # Оставляем как fallback
-    SUPPORT_MODES,
-    SUPPORT_PRESETS,
-)
+from .const import DOMAIN, EVENT_UNITS_CHANGED, SUPPORT_MODES, SUPPORT_PRESETS
 from .coordinator import IOhouseDataUpdateCoordinator
+from .entity_helpers import (
+    format_target_temperature,
+    get_unit_device_info,
+    get_unit_label,
+    get_unit_settings,
+    is_manual_unit,
+    unit_supports_presets,
+    unit_supports_target_temperature,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Инициализация платформы климата."""
+    """Set up climate entities for all discovered units."""
     coordinator: IOhouseDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
-    
-    # Создаем климатические сущности для всех активных зон
-    entities = []
-    for zone in coordinator.zones:
-        entities.append(IOhouseClimateEntity(coordinator, entry, zone))
-    
-    async_add_entities(entities, update_before_add=True)
-    
-    # Обработчик изменения зон
-    @callback
-    def handle_zones_changed(event):
-        """Обработка изменения списка зон."""
-        if event.data.get("entry_id") == entry.entry_id:
-            new_zones = set(event.data.get("zones", []))
-            existing_zones = {entity.zone for entity in entities if hasattr(entity, 'zone')}
-            
-            # Добавляем новые зоны
-            added_zones = new_zones - existing_zones
-            if added_zones:
-                new_entities = [
-                    IOhouseClimateEntity(coordinator, entry, zone)
-                    for zone in added_zones
-                ]
-                async_add_entities(new_entities, update_before_add=True)
-                entities.extend(new_entities)
-                _LOGGER.info("Добавлены климатические сущности для зон: %s", added_zones)
-    
-    # Подписка на события изменения зон
-    entry.async_on_unload(
-        hass.bus.async_listen(f"{DOMAIN}_zones_changed", handle_zones_changed)
-    )
+    entities: dict[str, IOhouseClimateEntity] = {}
 
-class IOhouseClimateEntity(CoordinatorEntity, ClimateEntity):
-    """Климатическая сущность iOhouse с корректным отображением температуры."""
-    
-    _attr_icon = "mdi:thermostat"
+    def _create_entities() -> list[IOhouseClimateEntity]:
+        new_entities: list[IOhouseClimateEntity] = []
+        for unit_id in coordinator.units:
+            if unit_id in entities:
+                continue
+            entity = IOhouseClimateEntity(coordinator, entry, unit_id)
+            entities[unit_id] = entity
+            new_entities.append(entity)
+        return new_entities
+
+    initial_entities = _create_entities()
+    if initial_entities:
+        async_add_entities(initial_entities, update_before_add=True)
+
+    @callback
+    def handle_units_changed(event) -> None:
+        if event.data.get("entry_id") != entry.entry_id:
+            return
+        new_entities = _create_entities()
+        if new_entities:
+            async_add_entities(new_entities, update_before_add=True)
+            _LOGGER.info(
+                "Added ioHouse climate entities for units: %s",
+                [entity.unit_id for entity in new_entities],
+            )
+
+    entry.async_on_unload(hass.bus.async_listen(EVENT_UNITS_CHANGED, handle_units_changed))
+
+
+class IOhouseClimateEntity(CoordinatorEntity[IOhouseDataUpdateCoordinator], ClimateEntity):
+    """Climate entity backed by ioHouse unit_id."""
+
     _attr_has_entity_name = True
     _attr_name = None
+    _attr_icon = "mdi:thermostat"
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
-    _attr_supported_features = (
-        ClimateEntityFeature.TARGET_TEMPERATURE
-        | ClimateEntityFeature.PRESET_MODE
-        | ClimateEntityFeature.TURN_OFF
-        | ClimateEntityFeature.TURN_ON
-    )
     _attr_hvac_modes = SUPPORT_MODES
-    _attr_preset_modes = SUPPORT_PRESETS
+    _attr_precision = 0.1
+    _attr_suggested_display_precision = 1
 
     def __init__(
         self,
         coordinator: IOhouseDataUpdateCoordinator,
         entry: ConfigEntry,
-        zone: str,
+        unit_id: str,
     ) -> None:
-        """Инициализация климатической сущности."""
         super().__init__(coordinator)
-        
-        self.coordinator = coordinator
         self.entry = entry
-        self.zone = zone
-        self._device_name = entry.data[CONF_NAME]
-        
-        # Получаем температурные диапазоны из конфигурации
-        zone_min_temps = entry.data.get(CONF_ZONE_MIN_TEMP, {})
-        zone_max_temps = entry.data.get(CONF_ZONE_MAX_TEMP, {})
-        zone_temp_steps = entry.data.get(CONF_ZONE_TEMP_STEP, {})
-        
-        self._attr_min_temp = zone_min_temps.get(zone, DEFAULT_MIN_TEMP)
-        self._attr_max_temp = zone_max_temps.get(zone, DEFAULT_MAX_TEMP)
-        
-        # Устанавливаем индивидуальный шаг температуры для зоны
-        self._zone_temp_step = zone_temp_steps.get(zone, DEFAULT_ZONE_TEMP_STEP)
-        self._attr_target_temperature_step = self._zone_temp_step
-        
-        # ВАЖНО: Точность отображения 0.01°C для текущей температуры
-        # НЕ зависит от zone_temp_step! Всегда показываем полную точность датчика
-
-        self._temp_precision = 0.01     
-        self._precision = 0.01                
-        # Получаем имя зоны из данных контроллера
-        zone_data = coordinator.get_zone_data(zone)
-        zone_name = zone_data.get("name", f"Zone {zone.upper()}")
-        
-        # Уникальный ID и имя
-        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_{zone}"
-        self._zone_name = zone_name
-        
-        _LOGGER.debug("Создана климатическая сущность %s для зоны %s (%s) с диапазоном %.1f-%.1f°C, шаг %.3f°C", 
-                     self._attr_unique_id, zone, zone_name, self._attr_min_temp, self._attr_max_temp, self._zone_temp_step)
-
-
-
-
-
+        self.unit_id = unit_id
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_{unit_id}"
 
     @property
     def device_info(self) -> dict[str, Any]:
-        """Информация об устройстве."""
-        return {
-            "identifiers": {(DOMAIN, f"{self.entry.entry_id}_{self.zone}")},
-            "name": f"{self.zone.upper()} {self._zone_name}",
-            "manufacturer": "iOhouse",
-            "model": "Thermozone Controller",
-        }
+        """Return unit device info."""
+        return get_unit_device_info(self.entry, self.unit_id, self._unit_data)
 
     @property
     def available(self) -> bool:
-        """Доступность сущности."""
+        """Entity availability follows the latest state payload."""
         return (
             self.coordinator.last_update_success
-            and self.zone in self.coordinator.available_zones
+            and self.unit_id in self.coordinator.available_units
         )
 
     @property
-    def current_temperature(self) -> float | None:
-        """ИСПРАВЛЕНО: Текущая температура БЕЗ округления, как приходит от датчика."""
-        zone_data = self.coordinator.get_zone_data(self.zone)
-        temp = zone_data.get("temperature")
-        
-        if temp is not None:
-            # ГЛАВНОЕ ИСПРАВЛЕНИЕ: Убрано округление, возвращаем как есть
-            return float(temp)
-        
+    def min_temp(self) -> float:
+        """Configured minimum target temperature."""
+        return get_unit_settings(self.entry, self.unit_id)[0]
+
+    @property
+    def max_temp(self) -> float:
+        """Configured maximum target temperature."""
+        return get_unit_settings(self.entry, self.unit_id)[1]
+
+    @property
+    def target_temperature_step(self) -> float:
+        """Configured target temperature step."""
+        return get_unit_settings(self.entry, self.unit_id)[2]
+
+    @property
+    def supported_features(self) -> ClimateEntityFeature:
+        """Expose features based on unit type."""
+        features = ClimateEntityFeature.TURN_OFF | ClimateEntityFeature.TURN_ON
+        if unit_supports_target_temperature(self._unit_data):
+            features |= ClimateEntityFeature.TARGET_TEMPERATURE
+        if unit_supports_presets(self._unit_data):
+            features |= ClimateEntityFeature.PRESET_MODE
+        return features
+
+    @property
+    def preset_modes(self) -> list[str] | None:
+        """Manual devices do not expose presets."""
+        if unit_supports_presets(self._unit_data):
+            return SUPPORT_PRESETS
         return None
+
+    @property
+    def current_temperature(self) -> float | None:
+        """Return raw current temperature from v2 state."""
+        return self._unit_data.get("temperature")
 
     @property
     def target_temperature(self) -> float | None:
-        """Целевая температура с округлением по шагу зоны."""
-        zone_data = self.coordinator.get_zone_data(self.zone)
-        target_temp = zone_data.get("target_temp")
-        
-        if target_temp is not None:
-            # Округляем целевую температуру до шага зоны для корректного отображения
-            return round(float(target_temp) / self._zone_temp_step) * self._zone_temp_step
-        
-        return None
+        """Return target temperature for climate units."""
+        if not unit_supports_target_temperature(self._unit_data):
+            return None
+        return self._unit_data.get("target_temp")
 
     @property
     def hvac_mode(self) -> HVACMode:
-        """Текущий режим HVAC."""
-        zone_data = self.coordinator.get_zone_data(self.zone)
-        power_state = zone_data.get("power_state", 0)
-        return HVACMode.HEAT if power_state else HVACMode.OFF
+        """Use target power as the user-facing HVAC mode."""
+        if int(self._unit_data.get("target_power") or self._unit_data.get("power") or 0):
+            return HVACMode.HEAT
+        return HVACMode.OFF
 
     @property
     def hvac_action(self) -> HVACAction | None:
-        """Текущее действие HVAC."""
-        zone_data = self.coordinator.get_zone_data(self.zone)
-        power_state = zone_data.get("power_state", 0)
-        
-        if not power_state:
+        """Best-effort action based on current state."""
+        if self.hvac_mode == HVACMode.OFF:
             return HVACAction.OFF
-        
-        burner = zone_data.get("burner", 0)
-        return HVACAction.HEATING if burner else HVACAction.IDLE
+
+        if int(self._unit_data.get("burner") or 0):
+            return HVACAction.HEATING
+
+        if int(self._unit_data.get("power") or 0):
+            return HVACAction.HEATING
+
+        if int(self._unit_data.get("valve_opening") or 0) or int(self._unit_data.get("valve_closing") or 0):
+            return HVACAction.HEATING
+
+        return HVACAction.IDLE
 
     @property
     def preset_mode(self) -> str | None:
-        """Текущий режим пресета."""
-        zone_data = self.coordinator.get_zone_data(self.zone)
-        
-        nightmode = zone_data.get("nightmode", 0)
-        away_mode = zone_data.get("away_mode", 0)
-        eco_mode = zone_data.get("eco_mode", 0)
-        
-        if nightmode:
+        """Map v2 flags to HA preset names."""
+        if not unit_supports_presets(self._unit_data):
+            return None
+
+        if int(self._unit_data.get("night_mode") or 0):
             return "sleep"
-        elif away_mode:
+        if int(self._unit_data.get("away_mode") or 0):
             return "away"
-        elif eco_mode:
+        if int(self._unit_data.get("eco_mode") or 0):
             return "eco"
-        else:
-            return "comfort"
+        return "comfort"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Дополнительные атрибуты состояния."""
-        zone_data = self.coordinator.get_zone_data(self.zone)
-        
+        """Expose useful v2 metadata and runtime flags."""
         return {
-            "zone": self.zone,
-            "zone_name": self._zone_name,
-            "modulation_level": zone_data.get("pwm", 0),
-            "power_state": zone_data.get("power_state", 0),
-            "burner": zone_data.get("burner", 0),
-            "nightmode": zone_data.get("nightmode", 0),
-            "away_mode": zone_data.get("away_mode", 0),
-            "eco_mode": zone_data.get("eco_mode", 0),
-            "min_temp": self._attr_min_temp,
-            "max_temp": self._attr_max_temp,
-            "target_temp_step": self._zone_temp_step,
+            "unit_id": self.unit_id,
+            "label": get_unit_label(self.unit_id, self._unit_data),
+            "group_id": self._unit_data.get("group_id"),
+            "group_name": self._unit_data.get("group_name"),
+            "selected_mode": self._unit_data.get("selected_mode"),
+            "device_type": self._unit_data.get("device_type"),
+            "power": self._unit_data.get("power"),
+            "target_power": self._unit_data.get("target_power"),
+            "pwm": self._unit_data.get("pwm"),
+            "burner": self._unit_data.get("burner"),
+            "heat_confirm": self._unit_data.get("heat_confirm"),
+            "slave": self._unit_data.get("slave"),
+            "manual_mode": is_manual_unit(self._unit_data),
         }
 
     async def async_set_temperature(self, **kwargs) -> None:
-        """Установка целевой температуры с мгновенным откликом."""
-        if (temperature := kwargs.get(ATTR_TEMPERATURE)) is None:
+        """Send target temperature through apiaction v2."""
+        if not unit_supports_target_temperature(self._unit_data):
             return
-        
-        # Округляем до шага зоны только при установке температуры пользователем
-        temperature = round(temperature / self._zone_temp_step) * self._zone_temp_step
-        
-        # Проверяем диапазон температуры
-        if not (self._attr_min_temp <= temperature <= self._attr_max_temp):
-            _LOGGER.warning(
-                "Температура %.3f вне диапазона %.1f-%.1f для зоны %s",
-                temperature, self._attr_min_temp, self._attr_max_temp, self.zone
-            )
+
+        temperature = kwargs.get(ATTR_TEMPERATURE)
+        if temperature is None:
             return
-        
-        # БЫСТРЫЙ вызов команды - координатор сам обновит UI мгновенно
-        command = f"{self.zone}_target_temp={temperature}"
-        
-        if await self.coordinator.send_command(command):
-            _LOGGER.debug("Установлена температура %.3f для зоны %s", temperature, self.zone)
-        else:
-            _LOGGER.error("Ошибка установки температуры для зоны %s", self.zone)
+
+        min_temp, max_temp, temp_step = get_unit_settings(self.entry, self.unit_id)
+        normalized = round(float(temperature) / temp_step) * temp_step
+        normalized = min(max(normalized, min_temp), max_temp)
+
+        await self.coordinator.send_zone_command(
+            self.unit_id,
+            {"tt": format_target_temperature(normalized)},
+        )
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
-        """Установка режима HVAC с мгновенным откликом."""
-        power_state = 1 if hvac_mode != HVACMode.OFF else 0
-        
-        # БЫСТРЫЙ вызов команды - координатор сам обновит UI мгновенно
-        command = f"{self.zone}_power={power_state}"
-        
-        if await self.coordinator.send_command(command):
-            _LOGGER.debug("Установлен режим %s для зоны %s", hvac_mode, self.zone)
-        else:
-            _LOGGER.error("Ошибка установки режима HVAC для зоны %s", self.zone)
+        """Send target power through apiaction v2."""
+        await self.coordinator.send_zone_command(
+            self.unit_id,
+            {"p": 0 if hvac_mode == HVACMode.OFF else 1},
+        )
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
-        """Установка режима пресета с мгновенным откликом."""
-        commands = []
-        
-        # Определяем команды для каждого пресета
-        if preset_mode == "away":
-            commands = [f"{self.zone}_away_mode=1", f"{self.zone}_nightmode=0"]
-            
-        elif preset_mode == "eco":
-            commands = [f"{self.zone}_eco_mode=1"]
-            
-        elif preset_mode == "comfort":
-            commands = [
-                f"{self.zone}_away_mode=0",
-                f"{self.zone}_eco_mode=0", 
-                f"{self.zone}_nightmode=0"
-            ]
-            
-        elif preset_mode == "home":
-            commands = [f"{self.zone}_away_mode=0"]
-            
-        elif preset_mode == "sleep":
-            commands = [f"{self.zone}_nightmode=1"]
-            
-        else:
-            _LOGGER.error("Неизвестный режим пресета: %s", preset_mode)
+        """Send preset flags through apiaction v2."""
+        if not unit_supports_presets(self._unit_data):
             return
-        
-        # БЫСТРЫЙ вызов команды - координатор сам обновит UI мгновенно
-        command = "&".join(commands)
-        
-        if await self.coordinator.send_command(command):
-            _LOGGER.debug("Установлен пресет %s для зоны %s", preset_mode, self.zone)
-        else:
-            _LOGGER.error("Ошибка установки пресета для зоны %s", self.zone)
 
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Обработка обновления от координатора."""
-        # Обновляем имя зоны если оно изменилось
-        zone_data = self.coordinator.get_zone_data(self.zone)
-        new_zone_name = zone_data.get("name", f"Zone {self.zone.upper()}")
-        
-        if new_zone_name != self._zone_name:
-            self._zone_name = new_zone_name
-            _LOGGER.debug("Обновлено имя зоны %s: %s", self.zone, new_zone_name)
-        
-        super()._handle_coordinator_update()
+        params: dict[str, int]
+        if preset_mode == "away":
+            params = {"aw": 1, "ec": 0, "nt": 0}
+        elif preset_mode == "eco":
+            params = {"aw": 0, "ec": 1, "nt": 0}
+        elif preset_mode in {"comfort", "home"}:
+            params = {"aw": 0, "ec": 0, "nt": 0}
+        elif preset_mode == "sleep":
+            params = {"aw": 0, "ec": 0, "nt": 1}
+        else:
+            _LOGGER.error("Unsupported preset mode for %s: %s", self.unit_id, preset_mode)
+            return
+
+        await self.coordinator.send_zone_command(self.unit_id, params)
+
+    @property
+    def _unit_data(self) -> dict[str, Any]:
+        return self.coordinator.get_unit_data(self.unit_id)

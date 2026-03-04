@@ -1,136 +1,47 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
 
+# iOhouse Climate
 
-# iOhouse Climate Integration for Home Assistant
+Home Assistant custom integration for iOhouse Thermozone controllers.
 
-**Интеграция Home Assistant для термо-контроллеров iOhouse Thermozone AB4**
+## What changed in 2.1.1
 
-Эта интеграция обеспечивает полную интеграцию климат-контроллеров iOhouse с Home Assistant, предоставляя управление несколькими зонами отопления, мониторинг состояния системы и автоматическое обнаружение устройств.
+- added Home Assistant `strings.json` so config/options flow shows translated field labels and step descriptions with device names
 
-## ✨ Возможности
+## What changed in 2.1.0
 
-### 🌡️ Климат-контроль
-- **Многозонное управление** - до 4 независимых зон (A1, A2, B1, B2)
-- **Точное управление температурой** - настраиваемый шаг температуры для каждой зоны (0.01-1.0°C)
-- **Гибкие температурные диапазоны** - индивидуальные мин/макс значения для каждой зоны
-- **Режимы работы** - Heat/Off с поддержкой пресетов (Comfort, Away, Eco, Home, Sleep)
-- **Мгновенный отклик** - немедленное обновление UI после команд
+- switched to `api_climate` v2 grouped payloads
+- discovery now uses stable `unit_id` from `cfg.groups[].d[]`
+- polling now uses `cfg_hash` and automatic config refresh on changes
+- write commands now use `apiaction?uid=<unit_id>&...`
+- device metadata includes `group_name`, `selected_mode`, and `device_type`
+- unsupported legacy output write switches were removed from the public API path
 
-### 📊 Мониторинг
-- **PWM сенсоры** - уровень модуляции для каждой зоны (0-100%)
-- **Клапаны** - позиция и состояние клапанов (открытие/закрытие)
-- **Переключатели выходов** - управление 8 дополнительными выходами (OUT1-OUT8)
-- **Летний режим** - глобальное переключение системы
+## Features
 
-### 🔄 Обновления
-- **OTA обновления** - обновление прошивки контроллера через Home Assistant
-- **Прогресс обновления** - отслеживание процесса обновления с уведомлениями
-- **Автоопределение версий** - автоматическая проверка доступных обновлений
+- climate entities for each runtime unit
+- PWM diagnostic sensors
+- valve telemetry for 2-pin zones
+- summer mode switch
+- firmware update entity
 
-### 🔍 Автообнаружение
-- **SSDP обнаружение** - автоматическое обнаружение через UPnP
-- **DHCP обнаружение** - поиск устройств по сетевым данным
-- **Zeroconf/mDNS** - обнаружение через Bonjour/Avahi
-- **Простая настройка** - пошаговый мастер конфигурации
+## Installation
 
-## 🚀 Установка
+### HACS
 
-### Через HACS (рекомендуется)
+1. Open HACS.
+2. Add `https://github.com/insound/iohouse_climate` as a custom integration repository.
+3. Install `iOhouse Climate`.
+4. Restart Home Assistant.
 
-#### Стандартный способ (рекомендуется)  
+### Manual
 
-1. Откройте **HACS** в Home Assistant
-2. Перейдите в раздел **"Интеграции"**
-7. Найдите **"iOhouse Climate"** в списке и нажмите **"Установить"**
-8. Перезапустите Home Assistant
+1. Download the latest `iohouse_climate.zip` release asset.
+2. Extract `custom_components/iohouse_climate` into your Home Assistant config directory.
+3. Restart Home Assistant.
 
-#### Добавление репозитория
+## Notes
 
-1. Откройте **HACS** в Home Assistant
-2. Перейдите в раздел **"Integrations"**
-3. Нажмите на **три точки** в правом верхнем углу → **"Custom repositories"**
-4. Добавьте URL: `https://github.com/insound/iohouse_climate`
-5. Выберите категорию **"Integration"**
-6. Нажмите **"Add"**
-7. Найдите **"iOhouse Climate"** в списке и нажмите **"Download"**
-8. Перезапустите Home Assistant
-
-### Ручная установка
-
-1. Скачайте последнюю версию из [releases](https://github.com/insound/iohouse_climate/releases)
-2. Извлеките архив в папку `custom_components/iohouse_climate/` вашей конфигурации HA
-3. Перезапустите Home Assistant
-
-## ⚙️ Настройка
-
-### Автоматическая настройка
-
-Интеграция поддерживает автообнаружение контроллеров iOhouse в локальной сети:
-
-1. Перейдите в **Settings** → **Devices & Services**
-2. Если контроллер обнаружен автоматически, вы увидите уведомление
-3. Нажмите **"Configure"** и следуйте инструкциям мастера
-
-### Ручная настройка
-
-1. Перейдите в **Settings** → **Devices & Services**
-2. Нажмите **"Add Integration"**
-3. Найдите **"iOhouse Climate"**
-4. Введите IP-адрес контроллера и настройки:
-   - **IP адрес** - адрес вашего контроллера
-   - **Порт** - обычно 80 (по умолчанию)
-   - **Имя** - произвольное имя для устройства
-   - **API ключ** - опционально, если включена авторизация
-5. Настройте температурные диапазоны для каждой обнаруженной зоны
-6. Нажмите **"Submit"**
-
-### Параметры настройки
-
-Для каждой активной зоны можно настроить:
-
-| Параметр | Описание | По умолчанию |
-|----------|----------|--------------|
-| **Мин. температура** | Минимальная уставка (°C) | 1.0 |
-| **Макс. температура** | Максимальная уставка (°C) | 100.0 |
-| **Шаг температуры** | Точность изменения (°C) | 0.05 |
-
-## 🏠 Создаваемые сущности
-
-### Climate (Климат)
-- `climate.{zone}_{zone_name}` - основное управление зоной
-  - Режимы: Heat, Off
-  - Пресеты: Comfort, Away, Eco, Home, Sleep
-  - Целевая температура с настраиваемым шагом
-
-### Sensor (Сенсоры)
-- `sensor.{zone}_{zone_name}_pwm_level` - уровень модуляции (%)
-
-### Valve (Клапаны)
-- `valve.{zone}_{zone_name}_valve` - состояние клапана зоны
-
-### Switch (Переключатели)
-- `switch.{device_name}_summer_mode` - летний режим
-- `switch.{device_name}_output_N` - выходы OUT1-OUT8
-
-### Update (Обновления)
-- `update.{device_name}_firmware` - обновление прошивки
-
-## 🔧 Дополнительные возможности
-
-### Автоматизации
-
-Пример автоматизации для эко-режима ночью:
-
-```yaml
-automation:
-  - alias: "Night Eco Mode"
-    trigger:
-      platform: time
-      at: "22:00:00"
-    action:
-      service: climate.set_preset_mode
-      target:
-        entity_id: climate.a1_living_room
-      data:
-        preset_mode: "eco"
-```
+- `api_climate` read requests are intended for a trusted local network.
+- `apiaction` write requests require `apikey_rest` if the controller has API auth enabled.
+- Existing installations moving from legacy `A1/A2/B1/B2` addressing to `unit_id` may need to review per-zone min/max/step settings after upgrade.
