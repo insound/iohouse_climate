@@ -121,9 +121,12 @@ def parse_climate_payload(
                     unit_order.append(unit_id)
                 active_units.add(unit_id)
 
-    common = dict(previous_common)
+    common = _clone_common(previous_common)
+    if cfg_present:
+        _merge_controller_config(payload.get("cfg", {}), common)
     if st_present:
         common.update(_parse_common_state(payload.get("st", {}).get("sys", {})))
+        _merge_controller_state(payload.get("st", {}), common)
 
     if not st_present:
         active_units = set(units.keys())
@@ -162,6 +165,197 @@ def _parse_common_state(sys_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _clone_common(previous_common: dict[str, Any]) -> dict[str, Any]:
+    common = dict(previous_common)
+    common["output_order"] = list(previous_common.get("output_order", []))
+    common["outputs_map"] = {
+        output_id: dict(data)
+        for output_id, data in previous_common.get("outputs_map", {}).items()
+    }
+    common["ds_order"] = list(previous_common.get("ds_order", []))
+    common["ds_map"] = {
+        sensor_id: dict(data)
+        for sensor_id, data in previous_common.get("ds_map", {}).items()
+    }
+    common["dht_order"] = list(previous_common.get("dht_order", []))
+    common["dht_map"] = {
+        sensor_id: dict(data)
+        for sensor_id, data in previous_common.get("dht_map", {}).items()
+    }
+    return common
+
+
+def _merge_controller_config(cfg_data: dict[str, Any], common: dict[str, Any]) -> None:
+    outputs_cfg = cfg_data.get("out")
+    if isinstance(outputs_cfg, list):
+        outputs_map: dict[str, dict[str, Any]] = {}
+        output_order: list[str] = []
+        for index, output in enumerate(outputs_cfg, start=1):
+            output_id = _as_str(output.get("id")) or f"out{index}"
+            output_data = dict(common.get("outputs_map", {}).get(output_id, {}))
+            output_data.update(
+                {
+                    "id": output_id,
+                    "name": _as_str(output.get("n")) or output_data.get("name") or f"Output {index}",
+                }
+            )
+            outputs_map[output_id] = output_data
+            output_order.append(output_id)
+        common["outputs_map"] = outputs_map
+        common["output_order"] = output_order
+
+    sensors_cfg = cfg_data.get("sens")
+    if isinstance(sensors_cfg, dict):
+        ds_cfg = sensors_cfg.get("ds")
+        if isinstance(ds_cfg, list):
+            ds_map: dict[str, dict[str, Any]] = {}
+            ds_order: list[str] = []
+            for index, sensor in enumerate(ds_cfg, start=1):
+                sensor_id = _as_str(sensor.get("id")) or f"ds{index}"
+                sensor_data = dict(common.get("ds_map", {}).get(sensor_id, {}))
+                sensor_data.update(
+                    {
+                        "id": sensor_id,
+                        "name": _as_str(sensor.get("n")) or sensor_data.get("name") or f"DS18B20 {index}",
+                    }
+                )
+                ds_map[sensor_id] = sensor_data
+                ds_order.append(sensor_id)
+            common["ds_map"] = ds_map
+            common["ds_order"] = ds_order
+
+        dht_cfg = sensors_cfg.get("dht")
+        if isinstance(dht_cfg, list):
+            dht_map: dict[str, dict[str, Any]] = {}
+            for index, sensor in enumerate(dht_cfg, start=1):
+                sensor_id = _as_str(sensor.get("id")) or f"dht{index}"
+                sensor_data = dict(common.get("dht_map", {}).get(sensor_id, {}))
+                sensor_data.update(
+                    {
+                        "id": sensor_id,
+                        "name": _as_str(sensor.get("n")) or sensor_data.get("name") or f"DHT {index}",
+                        "available": sensor_data.get("available", 0),
+                    }
+                )
+                dht_map[sensor_id] = sensor_data
+            common["dht_map"] = dht_map
+            common["dht_order"] = [
+                sensor_id
+                for sensor_id in common.get("dht_order", [])
+                if sensor_id in dht_map and _as_int(dht_map[sensor_id].get("available"), 0)
+            ]
+
+
+def _merge_controller_state(st_data: dict[str, Any], common: dict[str, Any]) -> None:
+    outputs_map = {
+        output_id: dict(data)
+        for output_id, data in common.get("outputs_map", {}).items()
+    }
+    output_order = list(common.get("output_order", []))
+
+    output_state = st_data.get("out")
+    if isinstance(output_state, dict) and isinstance(output_state.get("d"), list):
+        for index, output in enumerate(output_state.get("d", []), start=1):
+            output_id = _as_str(output.get("id")) or f"out{index}"
+            output_data = dict(outputs_map.get(output_id, {}))
+            output_data.update(
+                {
+                    "id": output_id,
+                    "name": output_data.get("name") or f"Output {index}",
+                    "state": _as_int(output.get("s"), 0),
+                    "pwm": _normalize_pwm(output.get("p")),
+                    "busy": _as_int(output.get("b"), 0),
+                    "owner_unit_id": _as_str(output.get("uid")),
+                }
+            )
+            outputs_map[output_id] = output_data
+            if output_id not in output_order:
+                output_order.append(output_id)
+    else:
+        for index, value in enumerate(common.get("outputs", []), start=1):
+            output_id = f"out{index}"
+            output_data = dict(outputs_map.get(output_id, {}))
+            output_data.update(
+                {
+                    "id": output_id,
+                    "name": output_data.get("name") or f"Output {index}",
+                    "state": _as_int(value, 0),
+                    "busy": output_data.get("busy", 0),
+                    "owner_unit_id": output_data.get("owner_unit_id", ""),
+                }
+            )
+            outputs_map[output_id] = output_data
+            if output_id not in output_order:
+                output_order.append(output_id)
+
+    common["outputs_map"] = outputs_map
+    common["output_order"] = output_order
+
+    sensors_state = st_data.get("sens")
+    if not isinstance(sensors_state, dict):
+        return
+
+    ds_map = {
+        sensor_id: dict(data)
+        for sensor_id, data in common.get("ds_map", {}).items()
+    }
+    ds_order = list(common.get("ds_order", []))
+    ds_state = sensors_state.get("ds")
+    if isinstance(ds_state, list):
+        for index, sensor in enumerate(ds_state, start=1):
+            sensor_id = _as_str(sensor.get("id")) or f"ds{index}"
+            sensor_data = dict(ds_map.get(sensor_id, {}))
+            sensor_data.update(
+                {
+                    "id": sensor_id,
+                    "name": sensor_data.get("name") or f"DS18B20 {index}",
+                    "added": _as_int(sensor.get("a"), 1),
+                    "error": _as_int(sensor.get("e"), 0),
+                    "temperature": _normalize_temperature(sensor.get("t")),
+                }
+            )
+            ds_map[sensor_id] = sensor_data
+            if sensor_id not in ds_order:
+                ds_order.append(sensor_id)
+    common["ds_map"] = ds_map
+    common["ds_order"] = ds_order
+
+    dht_map = {
+        sensor_id: dict(data)
+        for sensor_id, data in common.get("dht_map", {}).items()
+    }
+    dht_order = list(common.get("dht_order", []))
+    dht_state = sensors_state.get("dht")
+    if isinstance(dht_state, list):
+        visible_dht_ids: list[str] = []
+        for index, sensor in enumerate(dht_state, start=1):
+            sensor_id = _as_str(sensor.get("id")) or f"dht{index}"
+            sensor_data = dict(dht_map.get(sensor_id, {}))
+            sensor_available = _as_int(sensor.get("a"), 0)
+            sensor_data.update(
+                {
+                    "id": sensor_id,
+                    "name": sensor_data.get("name") or f"DHT {index}",
+                    "available": sensor_available,
+                    "temperature": _normalize_temperature(sensor.get("t")),
+                    "humidity": _normalize_humidity(sensor.get("h")),
+                }
+            )
+            dht_map[sensor_id] = sensor_data
+            if sensor_available:
+                visible_dht_ids.append(sensor_id)
+
+        dht_order = [
+            sensor_id for sensor_id in dht_order
+            if sensor_id in visible_dht_ids
+        ]
+        for sensor_id in visible_dht_ids:
+            if sensor_id not in dht_order:
+                dht_order.append(sensor_id)
+    common["dht_map"] = dht_map
+    common["dht_order"] = dht_order
+
+
 def _as_str(value: Any) -> str:
     if value is None:
         return ""
@@ -193,6 +387,13 @@ def _normalize_pwm(value: Any) -> int | None:
     if pwm_value > 100:
         return max(0, min(100, round(max(0, min(1023, pwm_value)) * 100 / 1023)))
     return max(0, min(100, pwm_value))
+
+
+def _normalize_humidity(value: Any) -> float | None:
+    humidity_value = _as_float(value)
+    if humidity_value is None:
+        return None
+    return max(0.0, min(100.0, humidity_value))
 
 
 def _normalize_temperature(value: Any) -> float | None:

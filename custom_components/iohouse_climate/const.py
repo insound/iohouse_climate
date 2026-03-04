@@ -24,6 +24,7 @@ API_CLIMATE_ENDPOINT = "/api_climate"
 API_ACTION_ENDPOINT = "/apiaction"
 
 EVENT_UNITS_CHANGED = f"{DOMAIN}_units_changed"
+EVENT_CONTROLLER_IO_CHANGED = f"{DOMAIN}_controller_io_changed"
 
 DEFAULT_MIN_TEMP = 1.0
 DEFAULT_MAX_TEMP = 100.0

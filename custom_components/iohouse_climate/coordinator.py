@@ -21,6 +21,7 @@ from .const import (
     CONF_HOST,
     CONF_PORT,
     DOMAIN,
+    EVENT_CONTROLLER_IO_CHANGED,
     EVENT_UNITS_CHANGED,
     FULL_REFRESH_INTERVAL,
     REGULAR_UPDATE_INTERVAL,
@@ -110,6 +111,9 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _apply_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Normalize payload and keep local caches in sync."""
         previous_units = set(self._units)
+        previous_output_ids = set(self._common.get("output_order", []))
+        previous_ds_ids = set(self._common.get("ds_order", []))
+        previous_dht_ids = set(self._common.get("dht_order", []))
         data = parse_climate_payload(
             payload,
             previous_units=self._units,
@@ -134,6 +138,24 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 },
             )
 
+        current_output_ids = set(self._common.get("output_order", []))
+        current_ds_ids = set(self._common.get("ds_order", []))
+        current_dht_ids = set(self._common.get("dht_order", []))
+        if (
+            previous_output_ids != current_output_ids
+            or previous_ds_ids != current_ds_ids
+            or previous_dht_ids != current_dht_ids
+        ):
+            self.hass.bus.async_fire(
+                EVENT_CONTROLLER_IO_CHANGED,
+                {
+                    "entry_id": self.entry.entry_id,
+                    "output_ids": self.output_ids,
+                    "ds_ids": self.ds_sensor_ids,
+                    "dht_ids": self.dht_sensor_ids,
+                },
+            )
+
         return data
 
     def _needs_periodic_full_refresh(self) -> bool:
@@ -149,6 +171,15 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def send_system_command(self, params: dict[str, Any]) -> bool:
         """Send a controller-level v2 action command."""
         return await self._send_action_command(dict(params))
+
+    async def send_output_command(self, output_id: str, state: bool) -> bool:
+        """Send a manual output command through apiaction v2."""
+        return await self._send_action_command(
+            {
+                "oid": output_id,
+                "ov": 1 if state else 0,
+            }
+        )
 
     async def send_update_command(self) -> bool:
         """Trigger firmware update."""
@@ -218,6 +249,15 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return {}
         return self.data.get("common", {})
 
+    def get_output_data(self, output_id: str) -> dict[str, Any]:
+        return self.get_common_data().get("outputs_map", {}).get(output_id, {})
+
+    def get_ds_sensor_data(self, sensor_id: str) -> dict[str, Any]:
+        return self.get_common_data().get("ds_map", {}).get(sensor_id, {})
+
+    def get_dht_sensor_data(self, sensor_id: str) -> dict[str, Any]:
+        return self.get_common_data().get("dht_map", {}).get(sensor_id, {})
+
     @property
     def units(self) -> list[str]:
         """Return known unit IDs in controller order."""
@@ -239,3 +279,15 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def available_zones(self) -> set[str]:
         """Backward-compatible alias for unit IDs."""
         return self.available_units
+
+    @property
+    def output_ids(self) -> list[str]:
+        return list(self.get_common_data().get("output_order", []))
+
+    @property
+    def ds_sensor_ids(self) -> list[str]:
+        return list(self.get_common_data().get("ds_order", []))
+
+    @property
+    def dht_sensor_ids(self) -> list[str]:
+        return list(self.get_common_data().get("dht_order", []))
