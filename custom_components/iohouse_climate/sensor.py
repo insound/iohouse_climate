@@ -166,7 +166,7 @@ class IOhouseDallasTemperatureSensor(BaseControllerSensor):
 
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
-    _attr_suggested_display_precision = 1
+    _attr_suggested_display_precision = 2
 
     def __init__(
         self,
@@ -204,7 +204,7 @@ class IOhouseDhtTemperatureSensor(BaseControllerSensor):
 
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
-    _attr_suggested_display_precision = 1
+    _attr_suggested_display_precision = 2
 
     def __init__(
         self,
@@ -245,7 +245,7 @@ class IOhouseDhtHumiditySensor(BaseControllerSensor):
 
     _attr_device_class = SensorDeviceClass.HUMIDITY
     _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_suggested_display_precision = 1
+    _attr_suggested_display_precision = 2
 
     def __init__(
         self,

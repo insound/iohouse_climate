@@ -126,7 +126,7 @@ class OutputSwitch(BaseControllerSwitch):
 
     @property
     def available(self) -> bool:
-        return super().available and not bool(self._output_data.get("busy", 0))
+        return super().available
 
     @property
     def is_on(self) -> bool:
@@ -139,16 +139,13 @@ class OutputSwitch(BaseControllerSwitch):
             "busy": self._output_data.get("busy", 0),
             "pwm": self._output_data.get("pwm"),
             "owner_unit_id": self._output_data.get("owner_unit_id"),
+            "manual_control_available": not bool(self._output_data.get("busy", 0)),
         }
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        if self._output_data.get("busy", 0):
-            return
         await self.coordinator.send_output_command(self.output_id, True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        if self._output_data.get("busy", 0):
-            return
         await self.coordinator.send_output_command(self.output_id, False)
 
     @property

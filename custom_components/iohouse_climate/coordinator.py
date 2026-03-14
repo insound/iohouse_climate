@@ -174,6 +174,15 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def send_output_command(self, output_id: str, state: bool) -> bool:
         """Send a manual output command through apiaction v2."""
+        output_data = self.get_output_data(output_id)
+        if bool(output_data.get("busy", 0)):
+            _LOGGER.debug(
+                "Skipping manual output command for busy output %s (owner=%s)",
+                output_id,
+                output_data.get("owner_unit_id"),
+            )
+            return False
+
         return await self._send_action_command(
             {
                 "oid": output_id,

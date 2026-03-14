@@ -97,8 +97,8 @@ def parse_climate_payload(
                     {
                         "power": _as_int(device.get("p")),
                         "target_power": _as_int(device.get("tp")),
-                        "temperature": _normalize_temperature(device.get("t")),
-                        "target_temp": _normalize_temperature(device.get("tt")),
+                        "temperature": _normalize_temperature(device.get("t"), precision="0.1"),
+                        "target_temp": _normalize_temperature(device.get("tt"), precision="0.1"),
                         "pwm": _normalize_pwm(device.get("pwm")),
                         "away_mode": _as_int(device.get("aw")),
                         "night_mode": _as_int(device.get("nt")),
@@ -311,7 +311,7 @@ def _merge_controller_state(st_data: dict[str, Any], common: dict[str, Any]) -> 
                     "name": sensor_data.get("name") or f"DS18B20 {index}",
                     "added": _as_int(sensor.get("a"), 1),
                     "error": _as_int(sensor.get("e"), 0),
-                    "temperature": _normalize_temperature(sensor.get("t")),
+                    "temperature": _normalize_temperature(sensor.get("t"), precision="0.01"),
                 }
             )
             ds_map[sensor_id] = sensor_data
@@ -337,8 +337,8 @@ def _merge_controller_state(st_data: dict[str, Any], common: dict[str, Any]) -> 
                     "id": sensor_id,
                     "name": sensor_data.get("name") or f"DHT {index}",
                     "available": sensor_available,
-                    "temperature": _normalize_temperature(sensor.get("t")),
-                    "humidity": _normalize_humidity(sensor.get("h")),
+                    "temperature": _normalize_temperature(sensor.get("t"), precision="0.01"),
+                    "humidity": _normalize_humidity(sensor.get("h"), precision="0.01"),
                 }
             )
             dht_map[sensor_id] = sensor_data
@@ -389,17 +389,23 @@ def _normalize_pwm(value: Any) -> int | None:
     return max(0, min(100, pwm_value))
 
 
-def _normalize_humidity(value: Any) -> float | None:
+def _normalize_humidity(value: Any, precision: str = "0.01") -> float | None:
     humidity_value = _as_float(value)
     if humidity_value is None:
         return None
-    return max(0.0, min(100.0, humidity_value))
+    try:
+        normalized = float(
+            Decimal(str(humidity_value)).quantize(Decimal(precision), rounding=ROUND_HALF_UP)
+        )
+    except (InvalidOperation, ValueError):
+        return None
+    return max(0.0, min(100.0, normalized))
 
 
-def _normalize_temperature(value: Any) -> float | None:
+def _normalize_temperature(value: Any, precision: str = "0.1") -> float | None:
     if value is None or value == "":
         return None
     try:
-        return float(Decimal(str(value)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+        return float(Decimal(str(value)).quantize(Decimal(precision), rounding=ROUND_HALF_UP))
     except (InvalidOperation, ValueError):
         return None

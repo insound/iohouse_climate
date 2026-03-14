@@ -22,7 +22,7 @@
 - **DS18B20**: все настроенные 1-wire датчики контроллера передаются в Home Assistant
 - **DHT**: температура и влажность по DHT-каналам контроллера передаются отдельными сенсорами только для реально доступных каналов
 - **Телеметрия клапанов**: позиция и состояние клапана для 2-pin зон
-- **Ручные outputs**: выходы контроллера создаются как switch-сущности, но занятые runtime-логикой каналы помечаются как временно недоступные
+- **Ручные outputs**: выходы контроллера создаются как switch-сущности, показывают живое состояние даже когда заняты логикой контроллера, но ручные команды для занятых каналов не отправляются
 - **Летний режим**: глобальный переключатель системы
 - **Диагностические атрибуты**: `unit_id`, группа, выбранный режим, тип устройства, burner и служебные флаги
 
@@ -113,7 +113,7 @@
 ### Switch
 
 - `switch.<controller>_summer_mode`: летний режим контроллера
-- `switch.<controller>_output_N`: ручные выходы контроллера; если выход сейчас занят логикой устройства, entity остаётся в реестре, но становится unavailable
+- `switch.<controller>_output_N`: ручные выходы контроллера; занятые контроллером каналы остаются видимыми и показывают live-state, но ручное переключение для них игнорируется
 
 ### Update
 
@@ -142,6 +142,11 @@ automation:
       data:
         preset_mode: "eco"
 ```
+
+## What changed in 2.3.0
+
+- DS18B20 and DHT controller sensors now preserve hundredths in Home Assistant, while climate entities intentionally stay at `0.1`
+- busy controller outputs now remain visible as live switches in Home Assistant, but manual commands for occupied outputs are blocked locally and are not sent to the controller
 
 ## What changed in 2.2.1
 
