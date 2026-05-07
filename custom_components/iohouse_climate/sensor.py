@@ -31,6 +31,16 @@ async def async_setup_entry(
     def _create_entities() -> list[SensorEntity]:
         new_entities: list[SensorEntity] = []
 
+        for entity_key, factory in (
+            ("ctrl:wifi_rssi", lambda: IOhouseWifiRssiSensor(coordinator, entry)),
+            ("ctrl:free_heap", lambda: IOhouseFreeHeapSensor(coordinator, entry)),
+            ("ctrl:uptime", lambda: IOhouseUptimeSensor(coordinator, entry)),
+        ):
+            if entity_key not in entities:
+                entity = factory()
+                entities[entity_key] = entity
+                new_entities.append(entity)
+
         for unit_id in coordinator.units:
             entity_key = f"pwm:{unit_id}"
             if entity_key not in entities:
@@ -159,6 +169,78 @@ class BaseControllerSensor(CoordinatorEntity[IOhouseDataUpdateCoordinator], Sens
     @property
     def available(self) -> bool:
         return self.coordinator.last_update_success
+
+
+class ControllerDiagnosticSensor(BaseControllerSensor):
+    """Base sensor for controller diagnostic values."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+
+class IOhouseWifiRssiSensor(ControllerDiagnosticSensor):
+    """Controller Wi-Fi RSSI sensor."""
+
+    _attr_name = "WiFi RSSI"
+    _attr_native_unit_of_measurement = "dBm"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:wifi"
+
+    def __init__(
+        self,
+        coordinator: IOhouseDataUpdateCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_wifi_rssi"
+
+    @property
+    def native_value(self) -> int | None:
+        return self.coordinator.get_common_data().get("wifi_rssi")
+
+
+class IOhouseFreeHeapSensor(ControllerDiagnosticSensor):
+    """Controller free heap sensor."""
+
+    _attr_name = "Free Heap"
+    _attr_native_unit_of_measurement = "B"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:memory"
+
+    def __init__(
+        self,
+        coordinator: IOhouseDataUpdateCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_free_heap"
+
+    @property
+    def native_value(self) -> int | None:
+        return self.coordinator.get_common_data().get("free_heap")
+
+
+class IOhouseUptimeSensor(ControllerDiagnosticSensor):
+    """Controller uptime sensor."""
+
+    _attr_name = "Uptime"
+    _attr_native_unit_of_measurement = "s"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:timer-outline"
+
+    def __init__(
+        self,
+        coordinator: IOhouseDataUpdateCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_uptime"
+
+    @property
+    def native_value(self) -> int | None:
+        uptime_ms = self.coordinator.get_common_data().get("uptime_ms")
+        if uptime_ms is None:
+            return None
+        return int(uptime_ms // 1000)
 
 
 class IOhouseDallasTemperatureSensor(BaseControllerSensor):

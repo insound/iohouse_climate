@@ -102,6 +102,9 @@
 ### Sensor
 
 - `sensor.<device>_pwm`: диагностический PWM-сенсор
+- `sensor.<controller>_wifi_rssi`: уровень сигнала Wi-Fi контроллера
+- `sensor.<controller>_free_heap`: свободная heap-память контроллера
+- `sensor.<controller>_uptime`: аптайм контроллера
 - `sensor.<ds18b20>`: температура DS18B20
 - `sensor.<dht>_temperature`: температура DHT
 - `sensor.<dht>_humidity`: влажность DHT
@@ -118,6 +121,10 @@
 ### Update
 
 - `update.<controller>_firmware`: обновление прошивки
+
+### Binary Sensor
+
+- `binary_sensor.<controller>_legionella_work`: активен ли сейчас цикл антилегионеллы
 
 ## Важные замечания
 
@@ -142,6 +149,29 @@ automation:
       data:
         preset_mode: "eco"
 ```
+
+## What changed in 2.4.0
+
+- auto-discovery now better matches both `iohouse` and `thermozone` controller naming
+- discovery setup no longer tries to read units before the user had a chance to enter an API key
+- controller diagnostics now expose Wi-Fi RSSI, free heap and uptime sensors
+- controller `legionella_work` is now available as a read-only binary sensor
+- `api_climate` parsing now keeps more v2 metadata, including `up`, `lw`, `ft`, `ca`, config `cap`, `zone` and config-side `sl`
+- valve entities can now appear later when valve telemetry becomes available after startup, instead of only on the first refresh
+- options flow refreshes the current controller unit list before editing per-unit temperature limits
+
+## What changed in 2.3.2
+
+- firmware update entity now preserves the last known `upd/fw/uv` values when partial `st.sys` payloads omit them, so the Home Assistant update sensor no longer drops into an unavailable/unknown state after otherwise successful controller requests
+
+## What changed in 2.3.1
+
+- controller device is registered before child zone devices reference it through `via_device`
+- partial `/apiaction` responses no longer make unrelated climate entities temporarily unavailable
+- `climate.set_temperature` now sends `temperature` and `hvac_mode` together when Home Assistant provides both
+- multi-entity climate actions with identical parameters are coalesced into one `/apiaction` request
+- batched zone commands are sent as repeated query arguments, for example `uid=a&uid=b&p=1`
+- the controller also accepts the fallback `uids=a,b` form for batch zone actions
 
 ## What changed in 2.3.0
 

@@ -43,6 +43,44 @@ def _normalize_temp_step(value: Any) -> float:
     return max(0.1, float(value))
 
 
+def _matches_discovery_name(value: str) -> bool:
+    normalized = value.lower()
+    return "iohouse" in normalized or "thermozone" in normalized
+
+
+async def _async_fetch_controller_units(
+    host: str,
+    port: int,
+    api_key: str,
+    scope: str = "full",
+) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    """Read controller units from api_climate v2."""
+    params: dict[str, Any] = {"scope": scope}
+    if api_key:
+        params["apikey_rest"] = api_key
+
+    url = build_api_url(host, port, API_CLIMATE_ENDPOINT, params)
+
+    async with aiohttp.ClientSession() as session:
+        async with async_timeout.timeout(10):
+            response = await session.get(url)
+            if response.status != 200:
+                raise ValueError(f"HTTP {response.status}")
+
+            payload = await response.json()
+            normalized = parse_climate_payload(payload)
+            units = normalized.get("units", {})
+            if not units:
+                raise ValueError("No active units found")
+
+            unit_order = [
+                unit_id
+                for unit_id in normalized.get("unit_order", list(units.keys()))
+                if unit_id in units
+            ]
+            return unit_order, {unit_id: units[unit_id] for unit_id in unit_order}
+
+
 class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle config flow for ioHouse Climate."""
 
@@ -146,9 +184,9 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not any(
             (
                 "iohouse ltd" in manufacturer.lower(),
-                model.lower() == "iohouse",
+                _matches_discovery_name(model),
                 model_number == "929000226503",
-                "iohouse" in friendly_name.lower(),
+                _matches_discovery_name(friendly_name),
             )
         ):
             return self.async_abort(reason="not_iohouse_device")
@@ -178,7 +216,7 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             hostname = discovery_info.get(dhcp.HOSTNAME, "")
             ip_address = discovery_info.get(dhcp.IP_ADDRESS, "")
 
-        if "iohouse" not in hostname.lower():
+        if hostname and not _matches_discovery_name(hostname):
             return self.async_abort(reason="not_iohouse_device")
         if not ip_address:
             return self.async_abort(reason="invalid_discovery_info")
@@ -206,7 +244,7 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             hostname = discovery_info.get(zeroconf.ATTR_HOSTNAME, "")
             name = discovery_info.get(zeroconf.ATTR_NAME, "")
 
-        if not host or not any("iohouse" in value.lower() for value in (hostname, name) if value):
+        if not host or not any(_matches_discovery_name(value) for value in (hostname, name) if value):
             return self.async_abort(reason="not_iohouse_device")
 
         self.host = host
@@ -226,13 +264,7 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             if not user_input.get("add_device"):
                 return self.async_abort(reason="user_rejected")
-            try:
-                self.discovered_units = await self._discover_units()
-                self._prepare_unit_settings()
-                return await self.async_step_discovery_setup()
-            except Exception as err:
-                _LOGGER.error("ioHouse discovery confirm failed for %s:%s: %s", self.host, self.port, err)
-                errors["base"] = "discovery_failed"
+            return await self.async_step_discovery_setup()
 
         return self.async_show_form(
             step_id="discovery_confirm",
@@ -321,28 +353,8 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def _discover_units(self) -> dict[str, dict[str, Any]]:
         """Call api_climate v2 and return discovered units."""
-        params: dict[str, Any] = {"scope": "full"}
-        if self.api_key:
-            params["apikey_rest"] = self.api_key
-
-        url = build_api_url(self.host, self.port, API_CLIMATE_ENDPOINT, params)
-
-        async with aiohttp.ClientSession() as session:
-            async with async_timeout.timeout(10):
-                response = await session.get(url)
-                if response.status != 200:
-                    raise ValueError(f"HTTP {response.status}")
-
-                payload = await response.json()
-                normalized = parse_climate_payload(payload)
-                units = normalized.get("units", {})
-                if not units:
-                    raise ValueError("No active units found")
-                return {
-                    unit_id: units[unit_id]
-                    for unit_id in normalized.get("unit_order", list(units.keys()))
-                    if unit_id in units
-                }
+        _, units = await _async_fetch_controller_units(self.host, self.port, self.api_key, scope="full")
+        return units
 
     @staticmethod
     @callback
@@ -366,6 +378,7 @@ class IOhouseOptionsFlowHandler(config_entries.OptionsFlow):
             for unit_id, value in self._zone_temp_step.items()
         }
         self._unit_labels = {unit_id: unit_id for unit_id in self._unit_order}
+        self._metadata_refreshed = False
 
     async def async_step_init(
         self,
@@ -386,6 +399,7 @@ class IOhouseOptionsFlowHandler(config_entries.OptionsFlow):
 
             if self._unit_index >= len(self._unit_order):
                 new_data = dict(self._config_entry.data)
+                new_data[CONF_ZONES] = list(self._unit_order)
                 new_data[CONF_ZONE_MIN_TEMP] = dict(self._zone_min_temp)
                 new_data[CONF_ZONE_MAX_TEMP] = dict(self._zone_max_temp)
                 new_data[CONF_ZONE_TEMP_STEP] = dict(self._zone_temp_step)
@@ -397,32 +411,27 @@ class IOhouseOptionsFlowHandler(config_entries.OptionsFlow):
 
     async def _refresh_unit_labels(self) -> None:
         """Fetch current unit labels for the options flow."""
-        if self._unit_labels and all(label != unit_id for unit_id, label in self._unit_labels.items()):
+        if self._metadata_refreshed:
             return
+
+        self._metadata_refreshed = True
 
         host = self._config_entry.data[CONF_HOST]
         port = self._config_entry.data.get(CONF_PORT, DEFAULT_PORT)
         api_key = self._config_entry.data.get(CONF_API_KEY, "")
 
-        params: dict[str, Any] = {"scope": "config"}
-        if api_key:
-            params["apikey_rest"] = api_key
-
-        url = build_api_url(host, port, API_CLIMATE_ENDPOINT, params)
-
         try:
-            async with aiohttp.ClientSession() as session:
-                async with async_timeout.timeout(10):
-                    response = await session.get(url)
-                    if response.status != 200:
-                        return
-                    payload = await response.json()
-                    normalized = parse_climate_payload(payload)
-                    units = normalized.get("units", {})
-                    self._unit_labels = {
-                        unit_id: get_unit_label(unit_id, units.get(unit_id, {}))
-                        for unit_id in self._unit_order
-                    }
+            unit_order, units = await _async_fetch_controller_units(host, port, api_key, scope="config")
+            self._unit_order = list(unit_order)
+            self._unit_labels = {
+                unit_id: get_unit_label(unit_id, units.get(unit_id, {}))
+                for unit_id in self._unit_order
+            }
+            for unit_id in self._unit_order:
+                self._zone_min_temp.setdefault(unit_id, DEFAULT_MIN_TEMP)
+                self._zone_max_temp.setdefault(unit_id, DEFAULT_MAX_TEMP)
+                self._zone_temp_step.setdefault(unit_id, DEFAULT_ZONE_TEMP_STEP)
+            self._unit_index = min(self._unit_index, max(len(self._unit_order) - 1, 0))
         except Exception as err:
             _LOGGER.debug("Could not refresh ioHouse unit labels for options flow: %s", err)
 

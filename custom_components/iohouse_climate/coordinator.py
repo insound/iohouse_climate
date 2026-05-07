@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import aiohttp
@@ -30,6 +31,15 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass
+class _PendingZoneBatch:
+    """Queued zone commands sharing the same action parameters."""
+
+    params: dict[str, Any]
+    unit_ids: set[str] = field(default_factory=set)
+    futures: list[asyncio.Future[bool]] = field(default_factory=list)
+
+
 class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Coordinator for grouped api_climate v2 payloads."""
 
@@ -54,10 +64,13 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cfg_hash = ""
         self._unit_order: list[str] = []
         self._units: dict[str, dict[str, Any]] = {}
+        self._active_units: set[str] = set()
         self._common: dict[str, Any] = {}
         self._last_full_refresh = 0.0
         self._last_commands: dict[tuple[tuple[str, str], ...], float] = {}
         self._command_debounce = 1.5
+        self._zone_batch_delay = 0.05
+        self._pending_zone_batches: dict[tuple[tuple[str, str], ...], _PendingZoneBatch] = {}
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch and normalize controller data."""
@@ -119,11 +132,13 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             previous_units=self._units,
             previous_order=self._unit_order,
             previous_common=self._common,
+            previous_active_units=self._active_units,
         )
 
         self._cfg_hash = data.get("cfg_hash", "") or self._cfg_hash
         self._unit_order = data.get("unit_order", [])
         self._units = data.get("units", {})
+        self._active_units = set(data.get("active_units", set()))
         self._common = data.get("common", {})
         if "cfg" in payload:
             self._last_full_refresh = time.time()
@@ -164,9 +179,48 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def send_zone_command(self, unit_id: str, params: dict[str, Any]) -> bool:
         """Send a device-level v2 action command."""
-        payload = dict(params)
-        payload["uid"] = unit_id
-        return await self._send_action_command(payload)
+        return await self._queue_zone_command(unit_id, params)
+
+    async def _queue_zone_command(self, unit_id: str, params: dict[str, Any]) -> bool:
+        """Coalesce simultaneous zone commands with identical parameters."""
+        command_key = self._command_key(params)
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bool] = loop.create_future()
+
+        batch = self._pending_zone_batches.get(command_key)
+        if batch is None:
+            batch = _PendingZoneBatch(params=dict(params))
+            self._pending_zone_batches[command_key] = batch
+            self.hass.async_create_task(self._flush_zone_command_batch(command_key))
+
+        batch.unit_ids.add(unit_id)
+        batch.futures.append(future)
+        return await future
+
+    async def _flush_zone_command_batch(self, command_key: tuple[tuple[str, str], ...]) -> None:
+        """Send one apiaction request for all queued units in a batch."""
+        await asyncio.sleep(self._zone_batch_delay)
+
+        batch = self._pending_zone_batches.pop(command_key, None)
+        if batch is None:
+            return
+
+        unit_ids = sorted(batch.unit_ids)
+        payload = dict(batch.params)
+        if len(unit_ids) == 1:
+            payload["uid"] = unit_ids[0]
+        else:
+            payload["uid"] = unit_ids
+
+        try:
+            success = await self._send_action_command(payload)
+        except Exception as err:
+            _LOGGER.error("Unexpected error while sending batched zone command %s: %s", payload, err)
+            success = False
+
+        for future in batch.futures:
+            if not future.done():
+                future.set_result(success)
 
     async def send_system_command(self, params: dict[str, Any]) -> bool:
         """Send a controller-level v2 action command."""
@@ -196,7 +250,7 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _send_action_command(self, params: dict[str, Any]) -> bool:
         """Send apiaction and apply returned state immediately."""
-        command_key = tuple(sorted((key, str(value)) for key, value in params.items()))
+        command_key = self._command_key(params)
         now = time.time()
         last_sent = self._last_commands.get(command_key)
         if last_sent is not None and (now - last_sent) < self._command_debounce:
@@ -242,6 +296,11 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         return True
 
+    @staticmethod
+    def _command_key(params: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+        """Return a stable key for command grouping/debounce."""
+        return tuple(sorted((key, str(value)) for key, value in params.items()))
+
     def get_unit_data(self, unit_id: str) -> dict[str, Any]:
         """Return data for a specific unit."""
         if not self.data:
@@ -280,9 +339,7 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @property
     def available_units(self) -> set[str]:
         """Return unit IDs present in the latest state payload."""
-        if not self.data:
-            return set()
-        return set(self.data.get("active_units", set()))
+        return set(self._active_units)
 
     @property
     def available_zones(self) -> set[str]:

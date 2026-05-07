@@ -30,6 +30,8 @@ from .entity_helpers import (
 
 _LOGGER = logging.getLogger(__name__)
 
+ATTR_HVAC_MODE = "hvac_mode"
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -157,17 +159,22 @@ class IOhouseClimateEntity(CoordinatorEntity[IOhouseDataUpdateCoordinator], Clim
 
     @property
     def hvac_action(self) -> HVACAction | None:
-        """Best-effort action based on current state."""
+        """Reflect the real actuator state, not just the algorithm power flag."""
         if self.hvac_mode == HVACMode.OFF:
             return HVACAction.OFF
 
-        if int(self._unit_data.get("burner") or 0):
+        if int(self._unit_data.get("valve_opening") or 0) or int(self._unit_data.get("valve_closing") or 0):
             return HVACAction.HEATING
+
+        logical_output = self._unit_data.get("output_logical")
+        if logical_output is not None:
+            return HVACAction.HEATING if int(logical_output or 0) > 0 else HVACAction.IDLE
+
+        burner = self._unit_data.get("burner")
+        if burner is not None:
+            return HVACAction.HEATING if int(burner or 0) else HVACAction.IDLE
 
         if int(self._unit_data.get("power") or 0):
-            return HVACAction.HEATING
-
-        if int(self._unit_data.get("valve_opening") or 0) or int(self._unit_data.get("valve_closing") or 0):
             return HVACAction.HEATING
 
         return HVACAction.IDLE
@@ -192,43 +199,66 @@ class IOhouseClimateEntity(CoordinatorEntity[IOhouseDataUpdateCoordinator], Clim
         return {
             "unit_id": self.unit_id,
             "label": get_unit_label(self.unit_id, self._unit_data),
+            "legacy_zone": self._unit_data.get("legacy_zone"),
             "group_id": self._unit_data.get("group_id"),
             "group_name": self._unit_data.get("group_name"),
             "selected_mode": self._unit_data.get("selected_mode"),
             "device_type": self._unit_data.get("device_type"),
+            "capability": self._unit_data.get("capability"),
             "power": self._unit_data.get("power"),
             "target_power": self._unit_data.get("target_power"),
+            "floor_temperature": self._unit_data.get("floor_temperature"),
             "pwm": self._unit_data.get("pwm"),
+            "output_logical": self._unit_data.get("output_logical"),
+            "cascade_active": self._unit_data.get("cascade_active"),
             "burner": self._unit_data.get("burner"),
             "heat_confirm": self._unit_data.get("heat_confirm"),
+            "after_floor": self._unit_data.get("after_floor"),
+            "after_floor_go": self._unit_data.get("after_floor_go"),
             "slave": self._unit_data.get("slave"),
             "manual_mode": is_manual_unit(self._unit_data),
         }
 
     async def async_set_temperature(self, **kwargs) -> None:
-        """Send target temperature through apiaction v2."""
-        if not unit_supports_target_temperature(self._unit_data):
-            return
+        """Send target temperature and optional HVAC mode through apiaction v2."""
+        params: dict[str, Any] = {}
 
         temperature = kwargs.get(ATTR_TEMPERATURE)
-        if temperature is None:
+        if temperature is not None and unit_supports_target_temperature(self._unit_data):
+            min_temp, max_temp, temp_step = get_unit_settings(self.entry, self.unit_id)
+            normalized = round(float(temperature) / temp_step) * temp_step
+            normalized = min(max(normalized, min_temp), max_temp)
+            params["tt"] = format_target_temperature(normalized)
+
+        hvac_mode = kwargs.get(ATTR_HVAC_MODE)
+        power_value = _hvac_mode_to_power(hvac_mode)
+        if power_value is not None:
+            params["p"] = power_value
+
+        if not params:
             return
 
-        min_temp, max_temp, temp_step = get_unit_settings(self.entry, self.unit_id)
-        normalized = round(float(temperature) / temp_step) * temp_step
-        normalized = min(max(normalized, min_temp), max_temp)
-
-        await self.coordinator.send_zone_command(
-            self.unit_id,
-            {"tt": format_target_temperature(normalized)},
-        )
+        await self.coordinator.send_zone_command(self.unit_id, params)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Send target power through apiaction v2."""
+        power_value = _hvac_mode_to_power(hvac_mode)
+        if power_value is None:
+            _LOGGER.error("Unsupported HVAC mode for %s: %s", self.unit_id, hvac_mode)
+            return
+
         await self.coordinator.send_zone_command(
             self.unit_id,
-            {"p": 0 if hvac_mode == HVACMode.OFF else 1},
+            {"p": power_value},
         )
+
+    async def async_turn_on(self) -> None:
+        """Turn the unit on."""
+        await self.async_set_hvac_mode(HVACMode.HEAT)
+
+    async def async_turn_off(self) -> None:
+        """Turn the unit off."""
+        await self.async_set_hvac_mode(HVACMode.OFF)
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Send preset flags through apiaction v2."""
@@ -253,3 +283,20 @@ class IOhouseClimateEntity(CoordinatorEntity[IOhouseDataUpdateCoordinator], Clim
     @property
     def _unit_data(self) -> dict[str, Any]:
         return self.coordinator.get_unit_data(self.unit_id)
+
+
+def _hvac_mode_to_power(hvac_mode: Any) -> int | None:
+    """Map HA HVAC mode values to the controller target power flag."""
+    if hvac_mode is None:
+        return None
+
+    try:
+        normalized = hvac_mode if isinstance(hvac_mode, HVACMode) else HVACMode(hvac_mode)
+    except ValueError:
+        return None
+
+    if normalized == HVACMode.OFF:
+        return 0
+    if normalized == HVACMode.HEAT:
+        return 1
+    return None

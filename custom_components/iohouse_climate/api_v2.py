@@ -21,6 +21,13 @@ def build_api_url(
     for key, value in params.items():
         if value is None or value == "":
             continue
+        if isinstance(value, (list, tuple, set)):
+            items = sorted(value) if isinstance(value, set) else value
+            for item in items:
+                if item is None or item == "":
+                    continue
+                query_params.append((key, str(item)))
+            continue
         query_params.append((key, str(value)))
 
     if not query_params:
@@ -34,11 +41,16 @@ def parse_climate_payload(
     previous_units: dict[str, dict[str, Any]] | None = None,
     previous_order: list[str] | None = None,
     previous_common: dict[str, Any] | None = None,
+    previous_active_units: set[str] | None = None,
 ) -> dict[str, Any]:
     """Normalize grouped api_climate/apiaction v2 payloads."""
     previous_units = previous_units or {}
     previous_order = list(previous_order or previous_units.keys())
     previous_common = previous_common or {}
+    if previous_active_units is None:
+        previous_active_units = set(previous_units.keys())
+    else:
+        previous_active_units = set(previous_active_units)
 
     units: dict[str, dict[str, Any]]
     unit_order: list[str]
@@ -69,6 +81,9 @@ def parse_climate_payload(
                         "group_protected": group_protected,
                         "selected_mode": _as_int(device.get("m")),
                         "device_type": _as_int(device.get("t")),
+                        "slave": _as_int(device.get("sl"), unit.get("slave")),
+                        "capability": _as_int(device.get("cap")),
+                        "legacy_zone": _as_str(device.get("zone")),
                     }
                 )
                 units[unit_id] = unit
@@ -77,7 +92,8 @@ def parse_climate_payload(
         units = {unit_id: dict(data) for unit_id, data in previous_units.items()}
         unit_order = [unit_id for unit_id in previous_order if unit_id in units]
 
-    active_units: set[str] = set()
+    partial_state = "ok" in payload
+    seen_state_units: set[str] = set()
 
     if st_present:
         st_groups = payload.get("st", {}).get("groups", [])
@@ -98,8 +114,19 @@ def parse_climate_payload(
                         "power": _as_int(device.get("p")),
                         "target_power": _as_int(device.get("tp")),
                         "temperature": _normalize_temperature(device.get("t"), precision="0.1"),
+                        "floor_temperature": (
+                            _normalize_temperature(device.get("ft"), precision="0.01")
+                            if "ft" in device
+                            else unit.get("floor_temperature")
+                        ),
                         "target_temp": _normalize_temperature(device.get("tt"), precision="0.1"),
                         "pwm": _normalize_pwm(device.get("pwm")),
+                        "output_logical": _normalize_pwm(device.get("ol")),
+                        "cascade_active": (
+                            _normalize_int_list(device.get("ca"))
+                            if "ca" in device
+                            else unit.get("cascade_active", [])
+                        ),
                         "away_mode": _as_int(device.get("aw")),
                         "night_mode": _as_int(device.get("nt")),
                         "eco_mode": _as_int(device.get("ec")),
@@ -107,7 +134,7 @@ def parse_climate_payload(
                         "burner": _as_int(device.get("br")),
                         "after_floor": _as_int(device.get("af")),
                         "after_floor_go": _as_int(device.get("afg")),
-                        "slave": _as_int(device.get("sl")),
+                        "slave": _as_int(device.get("sl"), unit.get("slave")),
                         "valve_position": _as_int(device.get("vp")),
                         "valve_closing": _as_int(device.get("vcl")),
                         "valve_opening": _as_int(device.get("vop")),
@@ -119,16 +146,21 @@ def parse_climate_payload(
                 units[unit_id] = unit
                 if unit_id not in unit_order:
                     unit_order.append(unit_id)
-                active_units.add(unit_id)
+                seen_state_units.add(unit_id)
 
     common = _clone_common(previous_common)
     if cfg_present:
         _merge_controller_config(payload.get("cfg", {}), common)
     if st_present:
-        common.update(_parse_common_state(payload.get("st", {}).get("sys", {})))
+        common.update(_parse_common_state(payload.get("st", {}).get("sys", {}), previous_common))
         _merge_controller_state(payload.get("st", {}), common)
 
-    if not st_present:
+    if partial_state:
+        active_units = set(previous_active_units)
+        active_units.update(seen_state_units)
+    elif st_present:
+        active_units = seen_state_units
+    else:
         active_units = set(units.keys())
 
     return {
@@ -144,25 +176,57 @@ def parse_climate_payload(
     }
 
 
-def _parse_common_state(sys_data: dict[str, Any]) -> dict[str, Any]:
-    """Normalize system state fields."""
-    outputs = sys_data.get("o")
-    normalized_outputs: list[int] = []
-    if isinstance(outputs, list):
-        normalized_outputs = [_as_int(value, 0) for value in outputs]
+def _parse_common_state(
+    sys_data: dict[str, Any],
+    previous_common: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Normalize system state fields while preserving values omitted in partial payloads."""
+    previous_common = previous_common or {}
 
-    return {
-        "summer_mode": _as_int(sys_data.get("sm"), 0),
-        "wifi_connected": _as_int(sys_data.get("wf"), 0),
-        "wifi_rssi": _as_int(sys_data.get("wr")),
-        "free_heap": _as_int(sys_data.get("fh")),
-        "activation_status": _as_int(sys_data.get("act")),
-        "cloud_status": _as_int(sys_data.get("cs")),
-        "update_available": _as_int(sys_data.get("upd"), 0),
-        "firmware_version": _as_str(sys_data.get("fw")),
-        "available_firmware_version": _as_str(sys_data.get("uv")),
-        "outputs": normalized_outputs,
+    state = {
+        "summer_mode": previous_common.get("summer_mode", 0),
+        "wifi_connected": previous_common.get("wifi_connected", 0),
+        "wifi_rssi": previous_common.get("wifi_rssi"),
+        "free_heap": previous_common.get("free_heap"),
+        "activation_status": previous_common.get("activation_status"),
+        "cloud_status": previous_common.get("cloud_status"),
+        "uptime_ms": previous_common.get("uptime_ms"),
+        "legionella_work": previous_common.get("legionella_work", 0),
+        "update_available": previous_common.get("update_available", 0),
+        "firmware_version": previous_common.get("firmware_version", ""),
+        "available_firmware_version": previous_common.get("available_firmware_version", ""),
+        "outputs": list(previous_common.get("outputs", [])),
     }
+
+    if "sm" in sys_data:
+        state["summer_mode"] = _as_int(sys_data.get("sm"), 0)
+    if "wf" in sys_data:
+        state["wifi_connected"] = _as_int(sys_data.get("wf"), 0)
+    if "wr" in sys_data:
+        state["wifi_rssi"] = _as_int(sys_data.get("wr"))
+    if "fh" in sys_data:
+        state["free_heap"] = _as_int(sys_data.get("fh"))
+    if "act" in sys_data:
+        state["activation_status"] = _as_int(sys_data.get("act"))
+    if "cs" in sys_data:
+        state["cloud_status"] = _as_int(sys_data.get("cs"))
+    if "up" in sys_data:
+        state["uptime_ms"] = _as_int(sys_data.get("up"))
+    if "lw" in sys_data:
+        state["legionella_work"] = _as_int(sys_data.get("lw"), 0)
+    if "upd" in sys_data:
+        state["update_available"] = _as_int(sys_data.get("upd"), 0)
+    if "fw" in sys_data:
+        state["firmware_version"] = _as_str(sys_data.get("fw"))
+    if "uv" in sys_data:
+        state["available_firmware_version"] = _as_str(sys_data.get("uv"))
+    elif "upd" in sys_data and _as_int(sys_data.get("upd"), 0) != 1:
+        state["available_firmware_version"] = ""
+    if "o" in sys_data:
+        outputs = sys_data.get("o")
+        state["outputs"] = [_as_int(value, 0) for value in outputs] if isinstance(outputs, list) else []
+
+    return state
 
 
 def _clone_common(previous_common: dict[str, Any]) -> dict[str, Any]:
@@ -387,6 +451,12 @@ def _normalize_pwm(value: Any) -> int | None:
     if pwm_value > 100:
         return max(0, min(100, round(max(0, min(1023, pwm_value)) * 100 / 1023)))
     return max(0, min(100, pwm_value))
+
+
+def _normalize_int_list(value: Any) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    return [_as_int(item, 0) or 0 for item in value]
 
 
 def _normalize_humidity(value: Any, precision: str = "0.01") -> float | None:

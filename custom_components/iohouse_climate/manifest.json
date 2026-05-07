@@ -42,7 +42,7 @@
       "modelNumber": "929000226503"
     }
   ],
-  "version": "2.3.0",
+  "version": "2.4.0",
   "zeroconf": [
     "_http._tcp.local.",
     "_iohouse._tcp.local.",

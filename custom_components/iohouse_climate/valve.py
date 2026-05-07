@@ -58,6 +58,18 @@ async def async_setup_entry(
 
     entry.async_on_unload(hass.bus.async_listen(EVENT_UNITS_CHANGED, handle_units_changed))
 
+    @callback
+    def handle_coordinator_update() -> None:
+        new_entities = _create_entities()
+        if new_entities:
+            async_add_entities(new_entities, update_before_add=True)
+            _LOGGER.info(
+                "Added ioHouse valve entities after runtime refresh: %s",
+                [entity.unit_id for entity in new_entities],
+            )
+
+    entry.async_on_unload(coordinator.async_add_listener(handle_coordinator_update))
+
 
 class IOhouseValveEntity(CoordinatorEntity[IOhouseDataUpdateCoordinator], ValveEntity):
     """Diagnostic valve entity."""
