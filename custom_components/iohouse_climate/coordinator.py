@@ -65,6 +65,9 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._unit_order: list[str] = []
         self._units: dict[str, dict[str, Any]] = {}
         self._active_units: set[str] = set()
+        self._group_order: list[str] = []
+        self._group_entities: dict[str, dict[str, Any]] = {}
+        self._active_group_entities: set[str] = set()
         self._common: dict[str, Any] = {}
         self._last_full_refresh = 0.0
         self._last_commands: dict[tuple[tuple[str, str], ...], float] = {}
@@ -124,6 +127,7 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _apply_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Normalize payload and keep local caches in sync."""
         previous_units = set(self._units)
+        previous_group_entities = set(self._group_entities)
         previous_output_ids = set(self._common.get("output_order", []))
         previous_ds_ids = set(self._common.get("ds_order", []))
         previous_dht_ids = set(self._common.get("dht_order", []))
@@ -133,23 +137,31 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             previous_order=self._unit_order,
             previous_common=self._common,
             previous_active_units=self._active_units,
+            previous_group_entities=self._group_entities,
+            previous_group_order=self._group_order,
+            previous_active_group_entities=self._active_group_entities,
         )
 
         self._cfg_hash = data.get("cfg_hash", "") or self._cfg_hash
         self._unit_order = data.get("unit_order", [])
         self._units = data.get("units", {})
         self._active_units = set(data.get("active_units", set()))
+        self._group_order = data.get("group_order", [])
+        self._group_entities = data.get("group_entities", {})
+        self._active_group_entities = set(data.get("active_group_entities", set()))
         self._common = data.get("common", {})
         if "cfg" in payload:
             self._last_full_refresh = time.time()
 
         current_units = set(self._units)
-        if previous_units != current_units:
+        current_group_entities = set(self._group_entities)
+        if previous_units != current_units or previous_group_entities != current_group_entities:
             self.hass.bus.async_fire(
                 EVENT_UNITS_CHANGED,
                 {
                     "entry_id": self.entry.entry_id,
                     "unit_ids": self.units,
+                    "group_entity_ids": self.group_entities,
                 },
             )
 
@@ -180,6 +192,12 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def send_zone_command(self, unit_id: str, params: dict[str, Any]) -> bool:
         """Send a device-level v2 action command."""
         return await self._queue_zone_command(unit_id, params)
+
+    async def send_group_command(self, group_id: str, kind: str, params: dict[str, Any]) -> bool:
+        """Send a group-control v2 action command."""
+        payload = {"gid": group_id, "gk": kind}
+        payload.update(params)
+        return await self._send_action_command(payload)
 
     async def _queue_zone_command(self, unit_id: str, params: dict[str, Any]) -> bool:
         """Coalesce simultaneous zone commands with identical parameters."""
@@ -303,9 +321,11 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def get_unit_data(self, unit_id: str) -> dict[str, Any]:
         """Return data for a specific unit."""
-        if not self.data:
-            return {}
-        return self.data.get("units", {}).get(unit_id, {})
+        return self._units.get(unit_id, {})
+
+    def get_group_entity_data(self, entity_id: str) -> dict[str, Any]:
+        """Return data for a group-control entity."""
+        return self._group_entities.get(entity_id, {})
 
     def get_zone_data(self, zone: str) -> dict[str, Any]:
         """Backward-compatible alias used by existing entity code."""
@@ -313,9 +333,7 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def get_common_data(self) -> dict[str, Any]:
         """Return system/common state."""
-        if not self.data:
-            return {}
-        return self.data.get("common", {})
+        return self._common
 
     def get_output_data(self, output_id: str) -> dict[str, Any]:
         return self.get_common_data().get("outputs_map", {}).get(output_id, {})
@@ -340,6 +358,20 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def available_units(self) -> set[str]:
         """Return unit IDs present in the latest state payload."""
         return set(self._active_units)
+
+    @property
+    def group_entities(self) -> list[str]:
+        """Return known group-control entity IDs."""
+        return [
+            entity_id
+            for entity_id in self._group_order
+            if entity_id in self._group_entities
+        ]
+
+    @property
+    def available_group_entities(self) -> set[str]:
+        """Return group-control entity IDs present in the latest state payload."""
+        return set(self._active_group_entities)
 
     @property
     def available_zones(self) -> set[str]:

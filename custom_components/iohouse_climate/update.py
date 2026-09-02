@@ -41,7 +41,7 @@ class IOhouseFirmwareUpdateEntity(
     """Firmware updater backed by apiaction flashupdate=1."""
 
     _attr_has_entity_name = True
-    _attr_name = "Firmware"
+    _attr_name = "Прошивка"
     _attr_icon = "mdi:cloud-download"
     _attr_device_class = UpdateDeviceClass.FIRMWARE
     _attr_entity_category = EntityCategory.CONFIG
@@ -78,6 +78,8 @@ class IOhouseFirmwareUpdateEntity(
         latest = common_data.get("available_firmware_version")
         if latest:
             return str(latest)
+        if int(common_data.get("update_available") or 0) == 1:
+            return "новая версия"
         return self.installed_version
 
     @property
@@ -85,15 +87,29 @@ class IOhouseFirmwareUpdateEntity(
         common_data = self.coordinator.get_common_data()
         if int(common_data.get("update_available") or 0) != 1:
             return False
-        latest = self.latest_version
+        raw_latest = common_data.get("available_firmware_version")
+        if not raw_latest:
+            return True
         installed = self.installed_version
-        if not latest or not installed:
-            return False
-        return latest != installed
+        if not installed:
+            return True
+        return str(raw_latest) != installed
 
     @property
     def in_progress(self) -> bool:
         return self._installing
+
+    @property
+    def title(self) -> str | None:
+        return "Прошивка контроллера iOhouse"
+
+    @property
+    def release_summary(self) -> str | None:
+        if not self.installed_version:
+            return "Текущая версия прошивки пока не получена"
+        if self.update_available:
+            return f"Доступна версия {self.latest_version or 'без номера версии'}"
+        return "Установлена актуальная версия"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -150,13 +166,13 @@ class IOhouseFirmwareUpdateEntity(
             return None
         return "\n".join(
             [
-                "iOhouse firmware update",
+                "Обновление прошивки iOhouse",
                 "",
-                f"Current version: {self.installed_version or 'unknown'}",
-                f"Available version: {self.latest_version}",
+                f"Текущая версия: {self.installed_version or 'неизвестно'}",
+                f"Доступная версия: {self.latest_version}",
                 "",
-                "The controller downloads and installs firmware on its own.",
-                "During the update the device may be temporarily unavailable.",
+                "Контроллер сам скачивает и устанавливает прошивку.",
+                "Во время обновления устройство может временно быть недоступно.",
             ]
         )
 

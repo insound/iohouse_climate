@@ -13,7 +13,12 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, EVENT_UNITS_CHANGED
 from .coordinator import IOhouseDataUpdateCoordinator
-from .entity_helpers import get_unit_device_info, get_unit_label, has_valve_data
+from .entity_helpers import (
+    get_controller_device_id,
+    get_unit_device_info,
+    get_unit_label,
+    has_valve_data,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,6 +30,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up valve entities for units with valve telemetry."""
     coordinator: IOhouseDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    controller_device_id = get_controller_device_id(hass, entry)
     entities: dict[str, IOhouseValveEntity] = {}
 
     def _create_entities() -> list[IOhouseValveEntity]:
@@ -35,7 +41,7 @@ async def async_setup_entry(
             unit_data = coordinator.get_unit_data(unit_id)
             if not has_valve_data(unit_data):
                 continue
-            entity = IOhouseValveEntity(coordinator, entry, unit_id)
+            entity = IOhouseValveEntity(coordinator, entry, unit_id, controller_device_id)
             entities[unit_id] = entity
             new_entities.append(entity)
         return new_entities
@@ -85,15 +91,22 @@ class IOhouseValveEntity(CoordinatorEntity[IOhouseDataUpdateCoordinator], ValveE
         coordinator: IOhouseDataUpdateCoordinator,
         entry: ConfigEntry,
         unit_id: str,
+        controller_device_id: str | None,
     ) -> None:
         super().__init__(coordinator)
         self.entry = entry
         self.unit_id = unit_id
+        self.controller_device_id = controller_device_id
         self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_{unit_id}_valve"
 
     @property
     def device_info(self) -> dict[str, Any]:
-        return get_unit_device_info(self.entry, self.unit_id, self._unit_data)
+        return get_unit_device_info(
+            self.entry,
+            self.unit_id,
+            self._unit_data,
+            self.controller_device_id,
+        )
 
     @property
     def available(self) -> bool:

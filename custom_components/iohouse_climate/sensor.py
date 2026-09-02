@@ -6,7 +6,18 @@ from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfTemperature
+try:
+    from homeassistant.const import (
+        CONCENTRATION_PARTS_PER_MILLION,
+        UnitOfRatio,
+        UnitOfTemperature,
+    )
+
+    PERCENTAGE_UNIT = UnitOfRatio.PERCENTAGE
+except (AttributeError, ImportError):
+    from homeassistant.const import PERCENTAGE as PERCENTAGE_UNIT, UnitOfTemperature
+
+    CONCENTRATION_PARTS_PER_MILLION = "ppm"
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -14,7 +25,13 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, EVENT_CONTROLLER_IO_CHANGED, EVENT_UNITS_CHANGED
 from .coordinator import IOhouseDataUpdateCoordinator
-from .entity_helpers import get_controller_device_info, get_unit_device_info, get_unit_label
+from .entity_helpers import (
+    get_controller_device_id,
+    get_controller_device_info,
+    get_group_device_info,
+    get_unit_device_info,
+    get_unit_label,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +43,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up sensors for ioHouse units and controller IO."""
     coordinator: IOhouseDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    controller_device_id = get_controller_device_id(hass, entry)
     entities: dict[str, SensorEntity] = {}
 
     def _create_entities() -> list[SensorEntity]:
@@ -44,8 +62,49 @@ async def async_setup_entry(
         for unit_id in coordinator.units:
             entity_key = f"pwm:{unit_id}"
             if entity_key not in entities:
-                entity = IOhousePwmSensor(coordinator, entry, unit_id)
+                entity = IOhousePwmSensor(coordinator, entry, unit_id, controller_device_id)
                 entities[entity_key] = entity
+                new_entities.append(entity)
+
+            heater_temperature_key = f"fancoil_heater_temperature:{unit_id}"
+            if (
+                heater_temperature_key not in entities
+                and coordinator.get_unit_data(unit_id).get("fancoil_heater_temperature") is not None
+            ):
+                entity = IOhouseFancoilHeaterTemperatureSensor(
+                    coordinator,
+                    entry,
+                    unit_id,
+                    controller_device_id,
+                )
+                entities[heater_temperature_key] = entity
+                new_entities.append(entity)
+
+        for entity_id in coordinator.group_entities:
+            group_data = coordinator.get_group_entity_data(entity_id)
+            if group_data.get("kind") != "v":
+                continue
+
+            demand_key = f"ventilation_demand:{entity_id}"
+            if demand_key not in entities:
+                entity = IOhouseGroupVentilationDemandSensor(
+                    coordinator,
+                    entry,
+                    entity_id,
+                    controller_device_id,
+                )
+                entities[demand_key] = entity
+                new_entities.append(entity)
+
+            co2_key = f"ventilation_co2:{entity_id}"
+            if co2_key not in entities:
+                entity = IOhouseGroupCo2Sensor(
+                    coordinator,
+                    entry,
+                    entity_id,
+                    controller_device_id,
+                )
+                entities[co2_key] = entity
                 new_entities.append(entity)
 
         for sensor_id in coordinator.ds_sensor_ids:
@@ -92,8 +151,15 @@ async def async_setup_entry(
             async_add_entities(new_entities, update_before_add=True)
             _LOGGER.info("Added ioHouse controller sensors after IO refresh: %s", [entity.unique_id for entity in new_entities])
 
+    @callback
+    def handle_coordinator_update() -> None:
+        new_entities = _create_entities()
+        if new_entities:
+            async_add_entities(new_entities, update_before_add=True)
+
     entry.async_on_unload(hass.bus.async_listen(EVENT_UNITS_CHANGED, handle_units_changed))
     entry.async_on_unload(hass.bus.async_listen(EVENT_CONTROLLER_IO_CHANGED, handle_controller_io_changed))
+    entry.async_on_unload(coordinator.async_add_listener(handle_coordinator_update))
 
 
 class IOhousePwmSensor(CoordinatorEntity[IOhouseDataUpdateCoordinator], SensorEntity):
@@ -102,7 +168,7 @@ class IOhousePwmSensor(CoordinatorEntity[IOhouseDataUpdateCoordinator], SensorEn
     _attr_has_entity_name = True
     _attr_name = "PWM"
     _attr_icon = "mdi:sine-wave"
-    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_native_unit_of_measurement = PERCENTAGE_UNIT
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_suggested_display_precision = 0
@@ -112,15 +178,22 @@ class IOhousePwmSensor(CoordinatorEntity[IOhouseDataUpdateCoordinator], SensorEn
         coordinator: IOhouseDataUpdateCoordinator,
         entry: ConfigEntry,
         unit_id: str,
+        controller_device_id: str | None,
     ) -> None:
         super().__init__(coordinator)
         self.entry = entry
         self.unit_id = unit_id
+        self.controller_device_id = controller_device_id
         self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_{unit_id}_pwm"
 
     @property
     def device_info(self) -> dict[str, Any]:
-        return get_unit_device_info(self.entry, self.unit_id, self._unit_data)
+        return get_unit_device_info(
+            self.entry,
+            self.unit_id,
+            self._unit_data,
+            self.controller_device_id,
+        )
 
     @property
     def available(self) -> bool:
@@ -146,6 +219,170 @@ class IOhousePwmSensor(CoordinatorEntity[IOhouseDataUpdateCoordinator], SensorEn
     @property
     def _unit_data(self) -> dict[str, Any]:
         return self.coordinator.get_unit_data(self.unit_id)
+
+
+class IOhouseFancoilHeaterTemperatureSensor(
+    CoordinatorEntity[IOhouseDataUpdateCoordinator],
+    SensorEntity,
+):
+    """Air temperature downstream of the optional fan-coil heater."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Fancoil Heater Air Temperature"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:heat-wave"
+    _attr_suggested_display_precision = 1
+
+    def __init__(
+        self,
+        coordinator: IOhouseDataUpdateCoordinator,
+        entry: ConfigEntry,
+        unit_id: str,
+        controller_device_id: str | None,
+    ) -> None:
+        super().__init__(coordinator)
+        self.entry = entry
+        self.unit_id = unit_id
+        self.controller_device_id = controller_device_id
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_{unit_id}_fancoil_heater_temperature"
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        return get_unit_device_info(
+            self.entry,
+            self.unit_id,
+            self._unit_data,
+            self.controller_device_id,
+        )
+
+    @property
+    def available(self) -> bool:
+        return (
+            self.coordinator.last_update_success
+            and self.unit_id in self.coordinator.available_units
+            and self._unit_data.get("fancoil_heater_temperature") is not None
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        return self._unit_data.get("fancoil_heater_temperature")
+
+    @property
+    def _unit_data(self) -> dict[str, Any]:
+        return self.coordinator.get_unit_data(self.unit_id)
+
+
+class BaseGroupVentilationSensor(
+    CoordinatorEntity[IOhouseDataUpdateCoordinator],
+    SensorEntity,
+):
+    """Base sensor for a group's CO2-driven ventilation runtime."""
+
+    _attr_has_entity_name = True
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: IOhouseDataUpdateCoordinator,
+        entry: ConfigEntry,
+        entity_key: str,
+        controller_device_id: str | None,
+    ) -> None:
+        super().__init__(coordinator)
+        self.entry = entry
+        self.entity_key = entity_key
+        self.controller_device_id = controller_device_id
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        return get_group_device_info(
+            self.entry,
+            str(self._group_data.get("group_id") or self.entity_key),
+            self._group_data,
+            self.controller_device_id,
+        )
+
+    @property
+    def available(self) -> bool:
+        return (
+            self.coordinator.last_update_success
+            and self.entity_key in self.coordinator.available_group_entities
+        )
+
+    @property
+    def _group_data(self) -> dict[str, Any]:
+        return self.coordinator.get_group_entity_data(self.entity_key)
+
+
+class IOhouseGroupVentilationDemandSensor(BaseGroupVentilationSensor):
+    """Effective CO2 ventilation demand for a controller group."""
+
+    _attr_name = "Ventilation Demand"
+    _attr_native_unit_of_measurement = PERCENTAGE_UNIT
+    _attr_icon = "mdi:fan-auto"
+    _attr_suggested_display_precision = 1
+
+    def __init__(
+        self,
+        coordinator: IOhouseDataUpdateCoordinator,
+        entry: ConfigEntry,
+        entity_key: str,
+        controller_device_id: str | None,
+    ) -> None:
+        super().__init__(coordinator, entry, entity_key, controller_device_id)
+        group_id = entity_key.split(":", 1)[0]
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_{group_id}_ventilation_demand"
+
+    @property
+    def native_value(self) -> float | None:
+        return self._group_data.get("pwm")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "co2_sensor_id": self._group_data.get("co2_sensor_id"),
+            "co2_fallback": self._group_data.get("fallback"),
+            "ventilation_mode": self.coordinator.get_common_data().get("ventilation_mode"),
+        }
+
+
+class IOhouseGroupCo2Sensor(BaseGroupVentilationSensor):
+    """CO2 value used by a controller group's ventilation algorithm."""
+
+    _attr_name = "CO2"
+    _attr_device_class = SensorDeviceClass.CO2
+    _attr_native_unit_of_measurement = CONCENTRATION_PARTS_PER_MILLION
+    _attr_icon = "mdi:molecule-co2"
+    _attr_suggested_display_precision = 0
+
+    def __init__(
+        self,
+        coordinator: IOhouseDataUpdateCoordinator,
+        entry: ConfigEntry,
+        entity_key: str,
+        controller_device_id: str | None,
+    ) -> None:
+        super().__init__(coordinator, entry, entity_key, controller_device_id)
+        group_id = entity_key.split(":", 1)[0]
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_{group_id}_ventilation_co2"
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._group_data.get("co2") is not None
+
+    @property
+    def native_value(self) -> float | None:
+        return self._group_data.get("co2")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "co2_sensor_id": self._group_data.get("co2_sensor_id"),
+            "fallback_active": self._group_data.get("fallback"),
+        }
 
 
 class BaseControllerSensor(CoordinatorEntity[IOhouseDataUpdateCoordinator], SensorEntity):
@@ -326,7 +563,7 @@ class IOhouseDhtHumiditySensor(BaseControllerSensor):
     """DHT humidity sensor exposed by the controller."""
 
     _attr_device_class = SensorDeviceClass.HUMIDITY
-    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_native_unit_of_measurement = PERCENTAGE_UNIT
     _attr_suggested_display_precision = 2
 
     def __init__(

@@ -1,64 +1,64 @@
 {
   "config": {
     "abort": {
-      "already_configured": "Device is already configured",
-      "already_in_progress": "Setup for this device is already in progress",
-      "cannot_connect": "Failed to connect to the device",
-      "not_iohouse_device": "This device does not look like an iOhouse controller",
-      "invalid_discovery_info": "The discovered device information is incomplete",
-      "user_rejected": "Device setup was cancelled"
+      "already_configured": "Устройство уже настроено",
+      "already_in_progress": "Настройка этого устройства уже выполняется",
+      "cannot_connect": "Не удалось подключиться к устройству",
+      "not_iohouse_device": "Обнаруженное устройство не похоже на контроллер iOhouse",
+      "invalid_discovery_info": "Недостаточно данных для настройки обнаруженного устройства",
+      "user_rejected": "Настройка устройства отменена"
     },
     "step": {
       "user": {
-        "title": "iOhouse Thermostat Setup",
-        "description": "Configure iOhouse Thermostat Integration",
+        "title": "Настройка iOhouse Thermostat",
+        "description": "Укажите параметры подключения к контроллеру iOhouse",
         "data": {
-          "host": "Host/IP Address",
-          "port": "Port",
-          "name": "Device Name",
-          "api_key": "API Key (optional)"
+          "host": "IP-адрес / хост",
+          "port": "Порт",
+          "name": "Имя устройства",
+          "api_key": "API-ключ (если используется)"
         }
       },
       "discovery_confirm": {
-        "title": "Confirm Device",
-        "description": "Found iOhouse controller {name} at {host}:{port}. Add it?",
+        "title": "Подтверждение устройства",
+        "description": "Найден контроллер iOhouse {name} по адресу {host}:{port}. Добавить его?",
         "data": {
-          "add_device": "Add this device"
+          "add_device": "Добавить это устройство"
         }
       },
       "discovery_setup": {
-        "title": "Controller Settings",
-        "description": "Review the controller settings before configuring climate devices on {host}:{port}.",
+        "title": "Параметры контроллера",
+        "description": "Проверьте параметры контроллера перед настройкой устройств на {host}:{port}.",
         "data": {
-          "name": "Device Name",
-          "api_key": "API Key (optional)"
+          "name": "Имя устройства",
+          "api_key": "API-ключ (если используется)"
         }
       },
       "zone_config": {
-        "title": "Temperature Limits",
-        "description": "Device {unit_index} of {unit_total}: {unit_name}",
+        "title": "Пределы температуры",
+        "description": "Климатическое устройство {unit_index} из {unit_total}: {unit_name}",
         "data": {
-          "min_temp": "Minimum temperature",
-          "max_temp": "Maximum temperature",
-          "temp_step": "Temperature step"
+          "min_temp": "Минимальная температура",
+          "max_temp": "Максимальная температура",
+          "temp_step": "Шаг температуры"
         }
       }
     },
     "error": {
-      "invalid_key": "Invalid API key",
-      "connection_error": "Connection error",
-      "discovery_failed": "Could not read devices from the controller"
+      "invalid_key": "Неверный API-ключ",
+      "connection_error": "Ошибка подключения",
+      "discovery_failed": "Не удалось получить список устройств с контроллера"
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Temperature Limits",
-        "description": "Device {unit_index} of {unit_total}: {unit_name}",
+        "title": "Пределы температуры",
+        "description": "Климатическое устройство {unit_index} из {unit_total}: {unit_name}",
         "data": {
-          "min_temp": "Minimum temperature",
-          "max_temp": "Maximum temperature",
-          "temp_step": "Temperature step"
+          "min_temp": "Минимальная температура",
+          "max_temp": "Максимальная температура",
+          "temp_step": "Шаг температуры"
         }
       }
     }
@@ -66,11 +66,11 @@
   "selector": {
     "preset_mode": {
       "options": {
-        "away": "Away",
-        "home": "Home",
-        "comfort": "Comfort",
-        "sleep": "Sleep",
-        "eco": "Eco"
+        "away": "Нет дома",
+        "home": "Дом",
+        "comfort": "Комфорт",
+        "sleep": "Ночь",
+        "eco": "Эко"
       }
     }
   }

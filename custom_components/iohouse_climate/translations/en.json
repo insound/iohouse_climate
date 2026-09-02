@@ -36,7 +36,7 @@
       },
       "zone_config": {
         "title": "Temperature Limits",
-        "description": "Device {unit_index} of {unit_total}: {unit_name}",
+        "description": "Climate device {unit_index} of {unit_total}: {unit_name}",
         "data": {
           "min_temp": "Minimum temperature",
           "max_temp": "Maximum temperature",
@@ -54,7 +54,7 @@
     "step": {
       "init": {
         "title": "Temperature Limits",
-        "description": "Device {unit_index} of {unit_total}: {unit_name}",
+        "description": "Climate device {unit_index} of {unit_total}: {unit_name}",
         "data": {
           "min_temp": "Minimum temperature",
           "max_temp": "Maximum temperature",

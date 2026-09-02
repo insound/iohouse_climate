@@ -29,7 +29,7 @@ from .const import (
     DEFAULT_ZONE_TEMP_STEP,
     DOMAIN,
 )
-from .entity_helpers import get_unit_label
+from .entity_helpers import get_unit_label, unit_supports_target_temperature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +46,18 @@ def _normalize_temp_step(value: Any) -> float:
 def _matches_discovery_name(value: str) -> bool:
     normalized = value.lower()
     return "iohouse" in normalized or "thermozone" in normalized
+
+
+def _climate_unit_ids(
+    unit_order: list[str],
+    units: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Return units that still belong to HA climate."""
+    return [
+        unit_id
+        for unit_id in unit_order
+        if unit_id in units and unit_supports_target_temperature(units[unit_id])
+    ]
 
 
 async def _async_fetch_controller_units(
@@ -138,6 +150,8 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Configure temperature limits one unit at a time."""
         if not self._unit_order:
             self._prepare_unit_settings()
+            if not self._unit_order:
+                return self._create_config_entry()
 
         if user_input is not None:
             current_unit_id = self._unit_order[self._unit_index]
@@ -149,18 +163,7 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._unit_index += 1
 
             if self._unit_index >= len(self._unit_order):
-                data = {
-                    CONF_HOST: self.host,
-                    CONF_PORT: self.port,
-                    CONF_NAME: self.name,
-                    CONF_ZONES: list(self._unit_order),
-                    CONF_ZONE_MIN_TEMP: dict(self._zone_min_temp),
-                    CONF_ZONE_MAX_TEMP: dict(self._zone_max_temp),
-                    CONF_ZONE_TEMP_STEP: dict(self._zone_temp_step),
-                }
-                if self.api_key:
-                    data[CONF_API_KEY] = self.api_key
-                return self.async_create_entry(title=self.name, data=data)
+                return self._create_config_entry()
 
         return self._show_unit_config_form()
 
@@ -305,7 +308,10 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def _prepare_unit_settings(self) -> None:
         """Initialize per-unit config state for the wizard."""
-        self._unit_order = list(self.discovered_units.keys())
+        self._unit_order = _climate_unit_ids(
+            list(self.discovered_units.keys()),
+            self.discovered_units,
+        )
         self._zone_min_temp = {
             unit_id: self._zone_min_temp.get(unit_id, DEFAULT_MIN_TEMP)
             for unit_id in self._unit_order
@@ -319,6 +325,21 @@ class IOhouseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             for unit_id in self._unit_order
         }
         self._unit_index = min(self._unit_index, max(len(self._unit_order) - 1, 0))
+
+    def _create_config_entry(self) -> FlowResult:
+        """Create config entry with climate-only per-unit settings."""
+        data = {
+            CONF_HOST: self.host,
+            CONF_PORT: self.port,
+            CONF_NAME: self.name,
+            CONF_ZONES: list(self._unit_order),
+            CONF_ZONE_MIN_TEMP: dict(self._zone_min_temp),
+            CONF_ZONE_MAX_TEMP: dict(self._zone_max_temp),
+            CONF_ZONE_TEMP_STEP: dict(self._zone_temp_step),
+        }
+        if self.api_key:
+            data[CONF_API_KEY] = self.api_key
+        return self.async_create_entry(title=self.name, data=data)
 
     def _show_unit_config_form(self) -> FlowResult:
         """Render the current per-unit configuration form."""
@@ -407,6 +428,10 @@ class IOhouseOptionsFlowHandler(config_entries.OptionsFlow):
                 return self.async_create_entry(title="", data={})
 
         await self._refresh_unit_labels()
+        if not self._unit_order:
+            self._save_current_unit_settings()
+            return self.async_create_entry(title="", data={})
+
         return self._show_unit_options_form()
 
     async def _refresh_unit_labels(self) -> None:
@@ -422,7 +447,7 @@ class IOhouseOptionsFlowHandler(config_entries.OptionsFlow):
 
         try:
             unit_order, units = await _async_fetch_controller_units(host, port, api_key, scope="config")
-            self._unit_order = list(unit_order)
+            self._unit_order = _climate_unit_ids(unit_order, units)
             self._unit_labels = {
                 unit_id: get_unit_label(unit_id, units.get(unit_id, {}))
                 for unit_id in self._unit_order
@@ -434,6 +459,31 @@ class IOhouseOptionsFlowHandler(config_entries.OptionsFlow):
             self._unit_index = min(self._unit_index, max(len(self._unit_order) - 1, 0))
         except Exception as err:
             _LOGGER.debug("Could not refresh ioHouse unit labels for options flow: %s", err)
+
+    def _save_current_unit_settings(self) -> None:
+        """Persist climate-only per-unit settings after refresh/filtering."""
+        self._zone_min_temp = {
+            unit_id: self._zone_min_temp[unit_id]
+            for unit_id in self._unit_order
+            if unit_id in self._zone_min_temp
+        }
+        self._zone_max_temp = {
+            unit_id: self._zone_max_temp[unit_id]
+            for unit_id in self._unit_order
+            if unit_id in self._zone_max_temp
+        }
+        self._zone_temp_step = {
+            unit_id: self._zone_temp_step[unit_id]
+            for unit_id in self._unit_order
+            if unit_id in self._zone_temp_step
+        }
+
+        new_data = dict(self._config_entry.data)
+        new_data[CONF_ZONES] = list(self._unit_order)
+        new_data[CONF_ZONE_MIN_TEMP] = dict(self._zone_min_temp)
+        new_data[CONF_ZONE_MAX_TEMP] = dict(self._zone_max_temp)
+        new_data[CONF_ZONE_TEMP_STEP] = dict(self._zone_temp_step)
+        self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
 
     def _show_unit_options_form(self) -> FlowResult:
         """Render the current unit options form."""

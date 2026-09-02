@@ -36,7 +36,7 @@
       },
       "zone_config": {
         "title": "Пределы температуры",
-        "description": "Устройство {unit_index} из {unit_total}: {unit_name}",
+        "description": "Климатическое устройство {unit_index} из {unit_total}: {unit_name}",
         "data": {
           "min_temp": "Минимальная температура",
           "max_temp": "Максимальная температура",
@@ -54,7 +54,7 @@
     "step": {
       "init": {
         "title": "Пределы температуры",
-        "description": "Устройство {unit_index} из {unit_total}: {unit_name}",
+        "description": "Климатическое устройство {unit_index} из {unit_total}: {unit_name}",
         "data": {
           "min_temp": "Минимальная температура",
           "max_temp": "Максимальная температура",

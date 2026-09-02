@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 
 from .const import (
     CONF_NAME,
@@ -15,6 +17,11 @@ from .const import (
     DEFAULT_ZONE_TEMP_STEP,
     DOMAIN,
 )
+
+VENTILATION_MODE_MIN = 8
+VENTILATION_MODE_MAX = 12
+EXHAUST_VENTILATION_MODE = 17
+EXHAUST_VENTILATION_DEVICE_TYPE = 5
 
 
 def get_unit_name(unit_id: str, unit_data: dict[str, Any]) -> str:
@@ -36,15 +43,50 @@ def get_unit_device_info(
     entry: ConfigEntry,
     unit_id: str,
     unit_data: dict[str, Any],
+    controller_device_id: str | None = None,
 ) -> dict[str, Any]:
     """Build device info for a thermostat unit."""
-    return {
+    device_info = {
         "identifiers": {(DOMAIN, f"{entry.entry_id}_{unit_id}")},
         "name": get_unit_name(unit_id, unit_data),
         "manufacturer": "iOhouse",
         "model": get_unit_model(unit_data),
-        "via_device": (DOMAIN, entry.entry_id),
     }
+    _add_controller_device_link(device_info, entry, controller_device_id)
+    return device_info
+
+
+def get_group_device_info(
+    entry: ConfigEntry,
+    group_id: str,
+    group_data: dict[str, Any],
+    controller_device_id: str | None = None,
+) -> dict[str, Any]:
+    """Build device info for a group-control room."""
+    group_name = str(group_data.get("name") or group_id).strip() or group_id
+    device_info = {
+        "identifiers": {(DOMAIN, f"{entry.entry_id}_group_{group_id}")},
+        "name": group_name,
+        "manufacturer": "iOhouse",
+        "model": "Thermozone Group Control",
+    }
+    _add_controller_device_link(device_info, entry, controller_device_id)
+    return device_info
+
+
+def _add_controller_device_link(
+    device_info: dict[str, Any],
+    entry: ConfigEntry,
+    controller_device_id: str | None,
+) -> None:
+    """Link child devices without using DeviceInfo keys unsupported by older HA."""
+    device_info_fields = getattr(dr.DeviceInfo, "__annotations__", {})
+    if "via_device_id" in device_info_fields:
+        if controller_device_id:
+            device_info["via_device_id"] = controller_device_id
+        return
+
+    device_info["via_device"] = (DOMAIN, entry.entry_id)
 
 
 def get_controller_device_info(entry: ConfigEntry) -> dict[str, Any]:
@@ -57,8 +99,27 @@ def get_controller_device_info(entry: ConfigEntry) -> dict[str, Any]:
     }
 
 
+def get_controller_device_id(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
+    """Return the controller device registry ID for via-device links."""
+    device_registry = dr.async_get(hass)
+    if hasattr(device_registry, "async_get_device_by_identifier"):
+        device = device_registry.async_get_device_by_identifier(
+            (DOMAIN, entry.entry_id),
+            entry.entry_id,
+        )
+    else:
+        device = device_registry.async_get_device(identifiers={(DOMAIN, entry.entry_id)})
+    return device.id if device else None
+
+
 def get_unit_model(unit_data: dict[str, Any]) -> str:
     """Return a best-effort device model label."""
+    if is_exhaust_ventilation_unit(unit_data):
+        return "Thermozone Exhaust Ventilation"
+    if is_humidifier_unit(unit_data):
+        return "Thermozone Dehumidifier"
+    if is_heatcool_fancoil_unit(unit_data):
+        return "Thermozone Fan Coil"
     if has_valve_data(unit_data):
         return "Thermozone Valve Zone"
     if is_manual_unit(unit_data):
@@ -80,14 +141,68 @@ def is_manual_unit(unit_data: dict[str, Any]) -> bool:
     return int(unit_data.get("selected_mode") or 0) == 2
 
 
+def is_humidifier_unit(unit_data: dict[str, Any]) -> bool:
+    """Humidity-control zones are exposed through HA humidifier."""
+    return bool(unit_data.get("humidifier")) or int(unit_data.get("selected_mode") or 0) == 12
+
+
+def is_heatcool_fancoil_unit(unit_data: dict[str, Any]) -> bool:
+    """Three-speed heater/cooler fan coils are exposed with heat/cool modes."""
+    return int(unit_data.get("selected_mode") or 0) == 11
+
+
+def is_exhaust_ventilation_unit(unit_data: dict[str, Any]) -> bool:
+    """Follower exhaust zones are monitoring-only ventilation devices."""
+    return (
+        int(unit_data.get("selected_mode") or 0) == EXHAUST_VENTILATION_MODE
+        and bool(unit_data.get("slave"))
+        and int(unit_data.get("device_type") or 0) == EXHAUST_VENTILATION_DEVICE_TYPE
+    )
+
+
+def unit_supports_ventilation(unit_data: dict[str, Any]) -> bool:
+    """Return whether a unit participates in the independent ventilation mode."""
+    selected_mode = int(unit_data.get("selected_mode") or 0)
+    return (
+        VENTILATION_MODE_MIN <= selected_mode <= VENTILATION_MODE_MAX
+        and not bool(unit_data.get("slave"))
+        and bool(unit_data.get("ventilation_participation", selected_mode == 11))
+    )
+
+
+def is_climate_unit(unit_data: dict[str, Any]) -> bool:
+    """Return units represented by Home Assistant climate entities."""
+    return (
+        not is_humidifier_unit(unit_data)
+        and not is_manual_unit(unit_data)
+        and not is_exhaust_ventilation_unit(unit_data)
+    )
+
+
 def unit_supports_target_temperature(unit_data: dict[str, Any]) -> bool:
     """Only climate algorithm units expose target temperature control."""
-    return not is_manual_unit(unit_data) and not bool(unit_data.get("slave"))
+    return (
+        not is_humidifier_unit(unit_data)
+        and not is_manual_unit(unit_data)
+        and not bool(unit_data.get("slave"))
+        and not bool(unit_data.get("group_locked"))
+        and not bool(unit_data.get("target_locked"))
+    )
+
+
+def unit_supports_power_control(unit_data: dict[str, Any]) -> bool:
+    """Group-controlled children keep telemetry but lose direct power control."""
+    return not bool(unit_data.get("slave")) and not bool(unit_data.get("group_locked"))
 
 
 def unit_supports_presets(unit_data: dict[str, Any]) -> bool:
     """Manual devices do not have preset semantics in HA."""
-    return not is_manual_unit(unit_data)
+    return (
+        not is_humidifier_unit(unit_data)
+        and not is_manual_unit(unit_data)
+        and not bool(unit_data.get("group_locked"))
+        and not bool(unit_data.get("target_locked"))
+    )
 
 
 def has_valve_data(unit_data: dict[str, Any]) -> bool:
