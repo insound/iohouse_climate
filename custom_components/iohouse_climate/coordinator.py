@@ -26,6 +26,8 @@ from .const import (
     EVENT_UNITS_CHANGED,
     FULL_REFRESH_INTERVAL,
     REGULAR_UPDATE_INTERVAL,
+    REQUEST_TIMEOUT_SECONDS,
+    TRANSIENT_FAILURE_GRACE_COUNT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,6 +76,7 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._command_debounce = 1.5
         self._zone_batch_delay = 0.05
         self._pending_zone_batches: dict[tuple[tuple[str, str], ...], _PendingZoneBatch] = {}
+        self._consecutive_transport_failures = 0
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch and normalize controller data."""
@@ -91,15 +94,41 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ):
                 payload = await self._fetch_climate_payload(scope="full")
 
-            return self._apply_payload(payload)
+            data = self._apply_payload(payload)
+            self._consecutive_transport_failures = 0
+            return data
         except ConfigEntryAuthFailed:
             raise
         except asyncio.TimeoutError as err:
-            raise UpdateFailed("Timeout while talking to controller") from err
+            return self._handle_transport_failure(
+                "Timeout while talking to controller", err
+            )
         except aiohttp.ClientError as err:
-            raise UpdateFailed(f"HTTP error while talking to controller: {err}") from err
+            return self._handle_transport_failure(
+                f"HTTP error while talking to controller: {err}", err
+            )
         except Exception as err:
             raise UpdateFailed(f"Unexpected update error: {err}") from err
+
+    def _handle_transport_failure(
+        self, message: str, err: Exception
+    ) -> dict[str, Any]:
+        """Keep cached data through brief controller or network stalls."""
+        self._consecutive_transport_failures += 1
+
+        if (
+            self.data is not None
+            and self._consecutive_transport_failures <= TRANSIENT_FAILURE_GRACE_COUNT
+        ):
+            _LOGGER.warning(
+                "%s; keeping cached data after transient failure %s/%s",
+                message,
+                self._consecutive_transport_failures,
+                TRANSIENT_FAILURE_GRACE_COUNT,
+            )
+            return self.data
+
+        raise UpdateFailed(message) from err
 
     async def _fetch_climate_payload(
         self,
@@ -114,9 +143,7 @@ class IOhouseDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             params["apikey_rest"] = self.api_key
 
         url = build_api_url(self.host, self.port, API_CLIMATE_ENDPOINT, params)
-        timeout_seconds = 10 if scope == "full" else 6
-
-        async with async_timeout.timeout(timeout_seconds):
+        async with async_timeout.timeout(REQUEST_TIMEOUT_SECONDS):
             response = await self.session.get(url)
             if response.status == 401:
                 raise ConfigEntryAuthFailed("Invalid API key")

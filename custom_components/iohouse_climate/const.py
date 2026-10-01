@@ -35,6 +35,8 @@ SUPPORT_PRESETS = ["comfort", "away", "eco", "home", "sleep"]
 
 REGULAR_UPDATE_INTERVAL = timedelta(seconds=20)
 FULL_REFRESH_INTERVAL = timedelta(minutes=5)
+REQUEST_TIMEOUT_SECONDS = 10
+TRANSIENT_FAILURE_GRACE_COUNT = 2
 
 ERROR_MESSAGES = {
     "auth_required": "This action requires API key authentication",
